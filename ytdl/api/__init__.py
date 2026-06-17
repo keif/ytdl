@@ -17,11 +17,15 @@ from ytdl.events_bus import EventsBus
 def build_app(config: Config) -> FastAPI:
     bus = EventsBus()
 
+    # Migrate eagerly so the schema exists regardless of whether the ASGI
+    # lifespan is driven by the test client (TestClient runs it; raw
+    # AsyncClient + ASGITransport does not). migrate() is idempotent.
+    conn = connect(config.db_path)
+    migrate(conn)
+    conn.close()
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        conn = connect(config.db_path)
-        migrate(conn)
-        conn.close()
         supervisor = None
         if config.workers > 0:
             from ytdl.workers import Supervisor
@@ -46,4 +50,8 @@ def build_app(config: Config) -> FastAPI:
     from ytdl.api import routes_jobs
 
     app.include_router(routes_jobs.router)
+
+    from ytdl.api import routes_events
+
+    app.include_router(routes_events.router)
     return app

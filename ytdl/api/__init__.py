@@ -59,3 +59,13 @@ def build_app(config: Config) -> FastAPI:
 
     app.include_router(routes_library.router)
     return app
+
+
+def _load_runtime_config() -> Config:
+    from ytdl.config import load_config
+
+    return load_config()
+
+
+def app_factory() -> FastAPI:
+    return build_app(_load_runtime_config())

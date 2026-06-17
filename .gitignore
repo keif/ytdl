@@ -12,6 +12,7 @@ build/
 # Node
 node_modules/
 web/dist/
+web/tsconfig.tsbuildinfo
 
 # macOS
 .DS_Store

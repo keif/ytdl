@@ -153,6 +153,25 @@ def _build_ydl_options(job, ctx: DownloadContext, throttle: ProgressThrottle) ->
     return opts
 
 
+def probe(url: str, *, cookies_browser: str | None = None) -> dict:
+    """Flat-extract metadata without downloading. Returns yt-dlp's info dict.
+
+    Uses extract_flat='in_playlist' so playlist entries return as lightweight
+    references rather than full per-entry metadata fetches.
+    """
+    from yt_dlp import YoutubeDL
+
+    opts: dict = {
+        "quiet": True,
+        "extract_flat": "in_playlist",
+        "skip_download": True,
+    }
+    if cookies_browser:
+        opts["cookiesfrombrowser"] = (cookies_browser,)
+    with YoutubeDL(opts) as ydl:
+        return ydl.extract_info(url, download=False, process=False)
+
+
 def download(job, ctx: DownloadContext) -> DownloadResult:
     throttle = ProgressThrottle(interval_s=ctx.throttle_interval_s)
     opts = _build_ydl_options(job, ctx, throttle)

@@ -1,0 +1,283 @@
+"""Queue operations on top of the sqlite schema in db.py.
+
+Every public function takes a sqlite3.Connection so the caller controls
+lifetime and threading. Connections are safe to share across threads because
+we open them with check_same_thread=False; sqlite serializes writes via the
+busy_timeout pragma.
+"""
+from __future__ import annotations
+
+import json
+import sqlite3
+import time
+
+from ytdl.models import Event, Job, JobKind, JobStatus
+from ytdl.ulid import new_ulid
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _row_to_job(row: sqlite3.Row) -> Job:
+    return Job(
+        id=row["id"],
+        url=row["url"],
+        kind=JobKind(row["kind"]),
+        parent_job_id=row["parent_job_id"],
+        status=JobStatus(row["status"]),
+        format_pref=row["format_pref"],
+        output_dir=row["output_dir"],
+        output_path=row["output_path"],
+        title=row["title"],
+        video_id=row["video_id"],
+        uploader=row["uploader"],
+        duration_s=row["duration_s"],
+        filesize_bytes=row["filesize_bytes"],
+        bytes_done=row["bytes_done"],
+        speed_bps=row["speed_bps"],
+        eta_s=row["eta_s"],
+        error=row["error"],
+        attempts=row["attempts"],
+        created_at=row["created_at"],
+        started_at=row["started_at"],
+        finished_at=row["finished_at"],
+    )
+
+
+def record_event(
+    conn: sqlite3.Connection,
+    job_id: str,
+    kind: str,
+    payload: dict | None = None,
+) -> int:
+    cur = conn.execute(
+        "INSERT INTO events(job_id, kind, payload_json, created_at) VALUES (?, ?, ?, ?)",
+        (job_id, kind, json.dumps(payload or {}), _now_ms()),
+    )
+    return int(cur.lastrowid or 0)
+
+
+def enqueue(
+    conn: sqlite3.Connection,
+    *,
+    url: str,
+    kind: JobKind,
+    format_pref: str,
+    output_dir: str,
+    parent_job_id: str | None = None,
+) -> str:
+    job_id = new_ulid()
+    conn.execute(
+        """
+        INSERT INTO jobs(
+            id, url, kind, parent_job_id, status, format_pref, output_dir,
+            attempts, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+        """,
+        (
+            job_id,
+            url,
+            kind.value,
+            parent_job_id,
+            JobStatus.PENDING.value,
+            format_pref,
+            output_dir,
+            _now_ms(),
+        ),
+    )
+    record_event(conn, job_id, "enqueued", {"url": url, "kind": kind.value})
+    return job_id
+
+
+def claim_one(conn: sqlite3.Connection) -> Job | None:
+    """Atomically pick the oldest pending job and mark it running.
+
+    Uses RETURNING to make the read+write atomic from SQLite 3.35+.
+    """
+    started = _now_ms()
+    row = conn.execute(
+        """
+        UPDATE jobs
+        SET status = ?, started_at = ?, attempts = attempts + 1
+        WHERE id = (
+            SELECT id FROM jobs
+            WHERE status = ?
+            ORDER BY created_at ASC
+            LIMIT 1
+        )
+        RETURNING *
+        """,
+        (JobStatus.RUNNING.value, started, JobStatus.PENDING.value),
+    ).fetchone()
+    if row is None:
+        return None
+    record_event(conn, row["id"], "started", {})
+    return _row_to_job(row)
+
+
+def get_job(conn: sqlite3.Connection, job_id: str) -> Job | None:
+    row = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+    return _row_to_job(row) if row else None
+
+
+def list_jobs(
+    conn: sqlite3.Connection,
+    *,
+    status: JobStatus | None = None,
+    limit: int = 200,
+    offset: int = 0,
+) -> list[Job]:
+    if status is None:
+        rows = conn.execute(
+            "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM jobs WHERE status=? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (status.value, limit, offset),
+        ).fetchall()
+    return [_row_to_job(r) for r in rows]
+
+
+def update_progress(
+    conn: sqlite3.Connection,
+    job_id: str,
+    *,
+    bytes_done: int | None = None,
+    speed_bps: int | None = None,
+    eta_s: int | None = None,
+    filesize_bytes: int | None = None,
+) -> None:
+    conn.execute(
+        """
+        UPDATE jobs SET
+            bytes_done = COALESCE(?, bytes_done),
+            speed_bps  = COALESCE(?, speed_bps),
+            eta_s      = COALESCE(?, eta_s),
+            filesize_bytes = COALESCE(?, filesize_bytes)
+        WHERE id = ?
+        """,
+        (bytes_done, speed_bps, eta_s, filesize_bytes, job_id),
+    )
+
+
+def update_metadata(
+    conn: sqlite3.Connection,
+    job_id: str,
+    *,
+    title: str | None = None,
+    video_id: str | None = None,
+    uploader: str | None = None,
+    duration_s: int | None = None,
+) -> None:
+    conn.execute(
+        """
+        UPDATE jobs SET
+            title    = COALESCE(?, title),
+            video_id = COALESCE(?, video_id),
+            uploader = COALESCE(?, uploader),
+            duration_s = COALESCE(?, duration_s)
+        WHERE id = ?
+        """,
+        (title, video_id, uploader, duration_s, job_id),
+    )
+
+
+def finish(
+    conn: sqlite3.Connection,
+    job_id: str,
+    *,
+    status: JobStatus,
+    output_path: str | None = None,
+    error: str | None = None,
+) -> None:
+    conn.execute(
+        """
+        UPDATE jobs SET
+            status = ?,
+            output_path = COALESCE(?, output_path),
+            error = COALESCE(?, error),
+            finished_at = ?
+        WHERE id = ?
+        """,
+        (status.value, output_path, error, _now_ms(), job_id),
+    )
+    record_event(
+        conn,
+        job_id,
+        {
+            JobStatus.DONE: "finished",
+            JobStatus.FAILED: "failed",
+            JobStatus.CANCELED: "canceled",
+        }.get(status, "log"),
+        {"output_path": output_path, "error": error},
+    )
+
+
+def cancel(conn: sqlite3.Connection, job_id: str) -> bool:
+    """Cancel pending -> canceled directly; running -> canceling (worker observes flag)."""
+    cur = conn.execute(
+        """
+        UPDATE jobs SET status = ?
+        WHERE id = ? AND status = ?
+        """,
+        (JobStatus.CANCELED.value, job_id, JobStatus.PENDING.value),
+    )
+    if cur.rowcount > 0:
+        record_event(conn, job_id, "canceled", {})
+        return True
+    cur = conn.execute(
+        """
+        UPDATE jobs SET status = ?
+        WHERE id = ? AND status = ?
+        """,
+        (JobStatus.CANCELING.value, job_id, JobStatus.RUNNING.value),
+    )
+    return cur.rowcount > 0
+
+
+def revive_orphans(conn: sqlite3.Connection, *, max_attempts: int = 3) -> int:
+    """Reset `running` rows after a crash. Exhausted-attempts rows are failed."""
+    # Mark exhausted as failed first so the reset query doesn't move them.
+    exhausted = conn.execute(
+        """
+        UPDATE jobs SET status = ?, error = ?, finished_at = ?
+        WHERE status = ? AND attempts >= ?
+        """,
+        (
+            JobStatus.FAILED.value,
+            "worker crashed and retries exhausted",
+            _now_ms(),
+            JobStatus.RUNNING.value,
+            max_attempts,
+        ),
+    ).rowcount
+    revived = conn.execute(
+        """
+        UPDATE jobs SET status = ?, started_at = NULL
+        WHERE status = ?
+        """,
+        (JobStatus.PENDING.value, JobStatus.RUNNING.value),
+    ).rowcount
+    return revived + exhausted
+
+
+def list_events_since(
+    conn: sqlite3.Connection, since_id: int, limit: int = 1000
+) -> list[Event]:
+    rows = conn.execute(
+        "SELECT * FROM events WHERE id > ? ORDER BY id ASC LIMIT ?",
+        (since_id, limit),
+    ).fetchall()
+    return [
+        Event(
+            id=r["id"],
+            job_id=r["job_id"],
+            kind=r["kind"],
+            payload=json.loads(r["payload_json"]),
+            created_at=r["created_at"],
+        )
+        for r in rows
+    ]

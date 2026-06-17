@@ -19,4 +19,4 @@ ENV YTDL_DB_PATH=/data/ytdl.db
 ENV YTDL_OUTPUT_DIR=/downloads
 VOLUME ["/data", "/downloads"]
 EXPOSE 8765
-CMD ["uv", "run", "uvicorn", "ytdl.api:app_factory", "--factory", "--host", "0.0.0.0", "--port", "8765"]
+CMD ["/app/.venv/bin/uvicorn", "ytdl.api:app_factory", "--factory", "--host", "0.0.0.0", "--port", "8765"]

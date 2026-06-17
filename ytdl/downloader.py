@@ -10,8 +10,10 @@ from __future__ import annotations
 import errno
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Any
 
 
 class Classification(StrEnum):
@@ -102,3 +104,68 @@ class ProgressThrottle:
             self._last = now
             return True
         return False
+
+
+class DownloadCancelled(Exception):
+    """Raised inside the progress hook when the worker observes the cancel flag."""
+
+
+@dataclass
+class DownloadContext:
+    ydl_cls: Any  # yt_dlp.YoutubeDL or test double
+    cookies_browser: str | None
+    on_progress: Callable[[dict[str, Any]], None]
+    cancel_flag: Callable[[], bool]
+    throttle_interval_s: float = 1.0
+
+
+@dataclass
+class DownloadResult:
+    output_path: str
+    title: str | None
+    video_id: str | None
+    uploader: str | None
+    duration_s: int | None
+    filesize_bytes: int | None
+
+
+def _build_ydl_options(job, ctx: DownloadContext, throttle: ProgressThrottle) -> dict:
+    def hook(d: dict) -> None:
+        if ctx.cancel_flag():
+            raise DownloadCancelled()
+        if d.get("status") == "finished" or throttle.should_emit():
+            ctx.on_progress(d)
+
+    opts: dict = {
+        "format": build_format_selector(job.format_pref),
+        "outtmpl": build_output_template(
+            job.output_dir, is_playlist_child=job.parent_job_id is not None
+        ),
+        "restrictfilenames": True,
+        "noprogress": True,  # we use the hook, not the bar
+        "quiet": True,
+        "progress_hooks": [hook],
+        "merge_output_format": "mp4",
+        "concurrent_fragment_downloads": 4,
+    }
+    if ctx.cookies_browser:
+        opts["cookiesfrombrowser"] = (ctx.cookies_browser,)
+    return opts
+
+
+def download(job, ctx: DownloadContext) -> DownloadResult:
+    throttle = ProgressThrottle(interval_s=ctx.throttle_interval_s)
+    opts = _build_ydl_options(job, ctx, throttle)
+    with ctx.ydl_cls(opts) as ydl:
+        info = ydl.extract_info(job.url, download=True)
+
+    requested = info.get("requested_downloads") or []
+    output_path = requested[0]["filepath"] if requested else info.get("filepath", "")
+    return DownloadResult(
+        output_path=output_path,
+        title=info.get("title"),
+        video_id=info.get("id"),
+        uploader=info.get("uploader"),
+        duration_s=int(info["duration"]) if info.get("duration") else None,
+        filesize_bytes=info.get("filesize") or info.get("filesize_approx"),
+    )

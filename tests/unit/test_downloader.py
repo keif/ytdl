@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
 from ytdl.downloader import (
     Classification,
+    DownloadContext,
+    DownloadResult,
     ProgressThrottle,
     build_format_selector,
     build_output_template,
     classify_error,
+    download,
 )
+from ytdl.models import Job, JobKind, JobStatus
 
 
 def test_format_selector_best() -> None:
@@ -118,3 +124,112 @@ def test_throttle_releases_after_interval(monkeypatch: pytest.MonkeyPatch) -> No
     t.should_emit()
     now[0] += 1.5
     assert t.should_emit() is True
+
+
+def _make_job(tmp_path: Path) -> Job:
+    return Job(
+        id="01",
+        url="https://youtu.be/abc",
+        kind=JobKind.VIDEO,
+        parent_job_id=None,
+        status=JobStatus.RUNNING,
+        format_pref="best",
+        output_dir=str(tmp_path),
+    )
+
+
+def test_download_calls_yt_dlp_with_built_options(tmp_path: Path) -> None:
+    fake_ydl = MagicMock()
+    fake_ydl_cls = MagicMock(return_value=fake_ydl)
+    fake_ydl.__enter__ = MagicMock(return_value=fake_ydl)
+    fake_ydl.__exit__ = MagicMock(return_value=False)
+    fake_ydl.extract_info.return_value = {
+        "id": "abc",
+        "title": "Test Video",
+        "uploader": "Test Channel",
+        "duration": 42,
+        "requested_downloads": [{"filepath": str(tmp_path / "Test Video [abc].mp4")}],
+    }
+
+    progress_events: list[dict] = []
+    job = _make_job(tmp_path)
+    ctx = DownloadContext(
+        ydl_cls=fake_ydl_cls,
+        cookies_browser="chrome",
+        on_progress=lambda d: progress_events.append(d),
+        cancel_flag=lambda: False,
+    )
+    result = download(job, ctx)
+
+    assert isinstance(result, DownloadResult)
+    assert result.output_path == str(tmp_path / "Test Video [abc].mp4")
+    assert result.title == "Test Video"
+    assert result.video_id == "abc"
+
+    # The YoutubeDL options should include our format string and cookie tuple.
+    opts = fake_ydl_cls.call_args.args[0]
+    assert opts["format"] == "bv*+ba/best"
+    assert opts["cookiesfrombrowser"] == ("chrome",)
+    assert opts["restrictfilenames"] is True
+    assert "progress_hooks" in opts
+
+
+def test_download_progress_hook_fires_through_throttle(tmp_path: Path) -> None:
+    fake_ydl = MagicMock()
+    fake_ydl_cls = MagicMock(return_value=fake_ydl)
+    fake_ydl.__enter__ = MagicMock(return_value=fake_ydl)
+    fake_ydl.__exit__ = MagicMock(return_value=False)
+
+    captured: list[dict] = []
+
+    def extract_info(url: str, download: bool = True) -> dict:
+        # simulate yt-dlp invoking the hook several times
+        hook = fake_ydl_cls.call_args.args[0]["progress_hooks"][0]
+        for i in range(3):
+            hook({"status": "downloading", "downloaded_bytes": (i + 1) * 1000})
+        hook({"status": "finished", "filename": str(tmp_path / "x.mp4")})
+        return {
+            "id": "x",
+            "title": "X",
+            "requested_downloads": [{"filepath": str(tmp_path / "x.mp4")}],
+        }
+
+    fake_ydl.extract_info.side_effect = extract_info
+    job = _make_job(tmp_path)
+    ctx = DownloadContext(
+        ydl_cls=fake_ydl_cls,
+        cookies_browser=None,
+        on_progress=lambda d: captured.append(d),
+        cancel_flag=lambda: False,
+        throttle_interval_s=0.0,  # no throttling for the test
+    )
+    download(job, ctx)
+    # At least the first call goes through; throttle off means all do.
+    assert len(captured) >= 1
+    assert captured[0]["status"] == "downloading"
+
+
+def test_download_aborts_when_cancel_flag_set(tmp_path: Path) -> None:
+    from ytdl.downloader import DownloadCancelled
+
+    fake_ydl = MagicMock()
+    fake_ydl_cls = MagicMock(return_value=fake_ydl)
+    fake_ydl.__enter__ = MagicMock(return_value=fake_ydl)
+    fake_ydl.__exit__ = MagicMock(return_value=False)
+
+    def extract_info(url: str, download: bool = True) -> dict:
+        hook = fake_ydl_cls.call_args.args[0]["progress_hooks"][0]
+        hook({"status": "downloading", "downloaded_bytes": 1000})  # raises
+        return {}
+
+    fake_ydl.extract_info.side_effect = extract_info
+    job = _make_job(tmp_path)
+    ctx = DownloadContext(
+        ydl_cls=fake_ydl_cls,
+        cookies_browser=None,
+        on_progress=lambda d: None,
+        cancel_flag=lambda: True,
+        throttle_interval_s=0.0,
+    )
+    with pytest.raises(DownloadCancelled):
+        download(job, ctx)

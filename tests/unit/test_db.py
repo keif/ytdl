@@ -34,6 +34,7 @@ def test_indexes_exist(tmp_path: Path) -> None:
     ).fetchall()}
     assert "jobs_status_created" in idx
     assert "jobs_parent" in idx
+    assert "events_job_id" in idx
 
 
 def test_pragmas_set(tmp_path: Path) -> None:

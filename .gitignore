@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+dist/
+build/
+*.egg-info/
+
+# Node
+node_modules/
+web/dist/
+
+# macOS
+.DS_Store
+
+# Local data
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.env
+ytdl/web/

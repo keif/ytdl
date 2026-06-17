@@ -47,6 +47,20 @@ log = logging.getLogger(__name__)
 Downloader = Callable[[Any, DownloadContext], DownloadResult]
 
 
+def _sanitize_path_component(name: str) -> str:
+    """Make a yt-dlp-supplied title safe to use as a single directory component.
+
+    Strips path separators, NULs, and rejects '.' / '..' which would traverse
+    out of output_dir or shadow the parent. Truncates to 200 chars so unusually
+    long titles don't blow past filesystem name limits.
+    """
+    cleaned = name.replace("\\", "_").replace("/", "_").replace("\x00", "")
+    cleaned = cleaned.strip().strip(".")
+    if not cleaned or cleaned in (".", ".."):
+        cleaned = "Playlist"
+    return cleaned[:200]
+
+
 class Supervisor:
     def __init__(
         self,
@@ -165,8 +179,9 @@ class Supervisor:
 
             if info.get("_type") == "playlist":
                 playlist_title = info.get("title") or "Playlist"
+                safe_title = _sanitize_path_component(playlist_title)
                 promote_to_playlist(conn, job.id, title=playlist_title)
-                playlist_subdir = Path(job.output_dir) / playlist_title
+                playlist_subdir = Path(job.output_dir) / safe_title
                 entries = info.get("entries") or []
                 for entry in entries:
                     child_url = entry.get("webpage_url") or entry.get("url") or ""

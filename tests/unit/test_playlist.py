@@ -13,6 +13,7 @@ from ytdl.queue import (
     get_job,
     promote_to_playlist,
 )
+from ytdl.workers import _sanitize_path_component
 
 
 def test_promote_to_playlist_updates_kind_and_metadata(tmp_path: Path) -> None:
@@ -129,3 +130,23 @@ async def test_supervisor_expands_playlist_into_children(tmp_path: Path) -> None
     kids = children_of(conn, parent_id)
     assert len(kids) == 2
     assert all(k.status == JobStatus.DONE for k in kids)
+
+
+def test_sanitize_strips_path_separators() -> None:
+    assert _sanitize_path_component("creators/my list") == "creators_my list"
+    assert _sanitize_path_component("a\\b") == "a_b"
+
+
+def test_sanitize_rejects_dot_dot() -> None:
+    assert _sanitize_path_component("..") == "Playlist"
+    assert _sanitize_path_component(".") == "Playlist"
+    assert _sanitize_path_component("") == "Playlist"
+
+
+def test_sanitize_truncates_long_titles() -> None:
+    long = "x" * 500
+    assert _sanitize_path_component(long) == "x" * 200
+
+
+def test_sanitize_strips_null_bytes() -> None:
+    assert _sanitize_path_component("a\x00b") == "ab"

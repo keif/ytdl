@@ -54,4 +54,8 @@ def build_app(config: Config) -> FastAPI:
     from ytdl.api import routes_events
 
     app.include_router(routes_events.router)
+
+    from ytdl.api import routes_library
+
+    app.include_router(routes_library.router)
     return app

@@ -1002,7 +1002,6 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "rich", specifier = ">=13.9" },
     { name = "sqlmodel", specifier = ">=0.0.22" },
-    { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0" },
     { name = "typer", specifier = ">=0.13" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
     { name = "yt-dlp", specifier = ">=2024.12.13" },

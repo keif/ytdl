@@ -27,12 +27,15 @@ from ytdl.downloader import (
 )
 from ytdl.downloader import download as default_download
 from ytdl.events_bus import EventsBus
-from ytdl.models import JobStatus
+from ytdl.models import JobKind, JobStatus
 from ytdl.queue import (
+    all_children_terminal,
     claim_one,
+    enqueue,
     finish,
     get_job,
     list_jobs,
+    promote_to_playlist,
     record_event,
     revive_orphans,
     update_metadata,
@@ -53,6 +56,7 @@ class Supervisor:
         bus: EventsBus,
         cookies_browser: str | None,
         downloader: Downloader | None = None,
+        probe: Callable[[str], dict] | None = None,
         retry_delays_s: tuple[int, ...] = (2, 8),
         rate_limit_delay_s: int = 60,
     ) -> None:
@@ -61,6 +65,7 @@ class Supervisor:
         self._bus = bus
         self._cookies = cookies_browser
         self._download: Downloader = downloader or _default_download_adapter
+        self._probe: Callable[[str], dict] = probe or _default_probe_adapter
         self._retry_delays = retry_delays_s
         self._rate_limit_delay = rate_limit_delay_s
         self._tasks: list[asyncio.Task] = []
@@ -139,6 +144,78 @@ class Supervisor:
     async def _handle_job(self, conn, job) -> None:
         self._bus.publish({"event": "started", "job_id": job.id})
 
+        # Playlist detection: only probe top-level VIDEO jobs. Children that
+        # were enqueued via a previous expansion already carry a parent_job_id
+        # and skip straight to the video download path.
+        if job.kind == JobKind.VIDEO and job.parent_job_id is None:
+            try:
+                info = await asyncio.to_thread(self._probe, job.url)
+            except BaseException as exc:
+                cls = classify_error(exc)
+                finish(
+                    conn,
+                    job.id,
+                    status=JobStatus.FAILED,
+                    error=f"[probe:{cls.value}] {exc}",
+                )
+                self._bus.publish(
+                    {"event": "failed", "job_id": job.id, "error": str(exc)}
+                )
+                return
+
+            if info.get("_type") == "playlist":
+                playlist_title = info.get("title") or "Playlist"
+                promote_to_playlist(conn, job.id, title=playlist_title)
+                playlist_subdir = Path(job.output_dir) / playlist_title
+                entries = info.get("entries") or []
+                for entry in entries:
+                    child_url = entry.get("webpage_url") or entry.get("url") or ""
+                    if not child_url:
+                        continue
+                    enqueue(
+                        conn,
+                        url=child_url,
+                        kind=JobKind.VIDEO,
+                        format_pref=job.format_pref,
+                        output_dir=str(playlist_subdir),
+                        parent_job_id=job.id,
+                    )
+                # Parent stays RUNNING until all children reach a terminal
+                # state; the last child to finish flips the parent (see below).
+                self._bus.publish(
+                    {
+                        "event": "expanded",
+                        "job_id": job.id,
+                        "child_count": len(entries),
+                    }
+                )
+                return
+
+        # Regular video download (top-level video OR playlist child).
+        await self._download_video(conn, job)
+
+        # If this was a playlist child, re-check parent completion. Only the
+        # last child to reach a terminal state will actually flip the parent.
+        if job.parent_job_id is not None:
+            terminal, done, failed = all_children_terminal(conn, job.parent_job_id)
+            if terminal:
+                finish(
+                    conn,
+                    job.parent_job_id,
+                    status=JobStatus.DONE,
+                    output_path=None,
+                    error=(f"{failed} child(ren) failed" if failed else None),
+                )
+                self._bus.publish(
+                    {
+                        "event": "finished",
+                        "job_id": job.parent_job_id,
+                        "done": done,
+                        "failed": failed,
+                    }
+                )
+
+    async def _download_video(self, conn, job) -> None:
         def cancel_flag() -> bool:
             if self._cancel_flags.get(job.id):
                 return True
@@ -168,11 +245,13 @@ class Supervisor:
             )
 
         ctx = DownloadContext(
-            ydl_cls=None,  # not used by the adapter; real ydl_cls is set inside the default adapter
+            ydl_cls=None,  # set by the default adapter; tests stub the whole callable
             cookies_browser=self._cookies,
             on_progress=on_progress,
             cancel_flag=cancel_flag,
         )
+
+        Path(job.output_dir).mkdir(parents=True, exist_ok=True)
 
         attempt = 0
         while True:
@@ -238,3 +317,10 @@ def _default_download_adapter(job, ctx: DownloadContext) -> DownloadResult:
         throttle_interval_s=ctx.throttle_interval_s,
     )
     return default_download(job, real_ctx)
+
+
+def _default_probe_adapter(url: str) -> dict:
+    """Lazy default that delegates to the downloader's probe helper."""
+    from ytdl.downloader import probe as _probe
+
+    return _probe(url)

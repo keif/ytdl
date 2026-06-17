@@ -264,6 +264,47 @@ def revive_orphans(conn: sqlite3.Connection, *, max_attempts: int = 3) -> int:
     return revived + exhausted
 
 
+def promote_to_playlist(
+    conn: sqlite3.Connection, job_id: str, *, title: str | None
+) -> None:
+    """Re-classify a job as a playlist parent and optionally set its title."""
+    conn.execute(
+        "UPDATE jobs SET kind = ?, title = COALESCE(?, title) WHERE id = ?",
+        (JobKind.PLAYLIST.value, title, job_id),
+    )
+
+
+def children_of(conn: sqlite3.Connection, parent_id: str) -> list[Job]:
+    """Return all direct children of a playlist parent, oldest first."""
+    rows = conn.execute(
+        "SELECT * FROM jobs WHERE parent_job_id = ? ORDER BY created_at ASC",
+        (parent_id,),
+    ).fetchall()
+    return [_row_to_job(r) for r in rows]
+
+
+def all_children_terminal(
+    conn: sqlite3.Connection, parent_id: str
+) -> tuple[bool, int, int]:
+    """Return (all_terminal, done_count, failed_count) for a parent's children.
+
+    Returns (False, 0, 0) when the parent has no children yet.
+    """
+    rows = conn.execute(
+        "SELECT status FROM jobs WHERE parent_job_id = ?", (parent_id,)
+    ).fetchall()
+    if not rows:
+        return False, 0, 0
+    terminal_set = {
+        JobStatus.DONE.value,
+        JobStatus.FAILED.value,
+        JobStatus.CANCELED.value,
+    }
+    done = sum(1 for r in rows if r["status"] == JobStatus.DONE.value)
+    failed = sum(1 for r in rows if r["status"] == JobStatus.FAILED.value)
+    return all(r["status"] in terminal_set for r in rows), done, failed
+
+
 def list_events_since(
     conn: sqlite3.Connection, since_id: int, limit: int = 1000
 ) -> list[Event]:

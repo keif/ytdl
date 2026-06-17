@@ -27,7 +27,7 @@ def _b32(value: int, length: int) -> str:
 def new_ulid() -> str:
     global _last_ms, _last_rand
     with _lock:
-        ms = int(time.time() * 1000)
+        ms = max(int(time.time() * 1000), _last_ms)
         if ms == _last_ms:
             _last_rand += 1
         else:

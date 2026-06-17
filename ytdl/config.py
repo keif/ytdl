@@ -56,7 +56,10 @@ def _env_overrides() -> dict:
     if v := os.environ.get("YTDL_DB_PATH"):
         out["db_path"] = v
     if v := os.environ.get("YTDL_WORKERS"):
-        out["workers"] = int(v)
+        try:
+            out["workers"] = int(v)
+        except ValueError as exc:
+            raise ValueError(f"invalid YTDL_WORKERS={v!r}: must be an integer") from exc
     if v := os.environ.get("YTDL_COOKIES_BROWSER"):
         out["cookies_browser"] = v
     if v := os.environ.get("YTDL_DEFAULT_FORMAT"):

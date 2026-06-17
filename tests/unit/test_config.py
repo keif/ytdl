@@ -57,3 +57,11 @@ def test_workers_must_be_positive(tmp_data_dir: Path) -> None:
     cfg_path.write_text("workers = 0\n")
     with pytest.raises(ValueError, match="workers"):
         load_config()
+
+
+def test_malformed_workers_env_raises_with_clear_message(
+    tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("YTDL_WORKERS", "abc")
+    with pytest.raises(ValueError, match="YTDL_WORKERS"):
+        load_config()

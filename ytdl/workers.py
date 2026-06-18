@@ -155,6 +155,24 @@ class Supervisor:
         finally:
             conn.close()
 
+    async def _cancellable_sleep(self, conn, job_id: str, delay: float) -> bool:
+        """Sleep up to ``delay`` seconds, returning True if the job was canceled.
+
+        Polls the cancel flag + DB status every 250ms so we observe cancels
+        issued via the API mid-backoff instead of waiting out the full delay.
+        """
+        end = asyncio.get_event_loop().time() + delay
+        while True:
+            now = asyncio.get_event_loop().time()
+            if now >= end:
+                return False
+            if self._cancel_flags.get(job_id):
+                return True
+            current = get_job(conn, job_id)
+            if current is not None and current.status == JobStatus.CANCELING:
+                return True
+            await asyncio.sleep(min(0.25, end - now))
+
     async def _handle_job(self, conn, job) -> None:
         self._bus.publish({"event": "started", "job_id": job.id})
 
@@ -293,7 +311,10 @@ class Supervisor:
                     delay = self._retry_delays[attempt]
                     attempt += 1
                     record_event(conn, job.id, "log", {"retry_after_s": delay, "reason": str(exc)})
-                    await asyncio.sleep(delay)
+                    if await self._cancellable_sleep(conn, job.id, float(delay)):
+                        finish(conn, job.id, status=JobStatus.CANCELED, error="canceled")
+                        self._bus.publish({"event": "canceled", "job_id": job.id})
+                        return
                     continue
                 if cls == Classification.RATE_LIMITED and attempt == 0:
                     attempt += 1
@@ -303,7 +324,12 @@ class Supervisor:
                         "log",
                         {"rate_limited_for_s": self._rate_limit_delay},
                     )
-                    await asyncio.sleep(self._rate_limit_delay)
+                    if await self._cancellable_sleep(
+                        conn, job.id, float(self._rate_limit_delay)
+                    ):
+                        finish(conn, job.id, status=JobStatus.CANCELED, error="canceled")
+                        self._bus.publish({"event": "canceled", "job_id": job.id})
+                        return
                     continue
                 finish(conn, job.id, status=JobStatus.FAILED, error=f"[{cls.value}] {exc}")
                 self._bus.publish(

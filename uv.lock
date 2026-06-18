@@ -1009,9 +1009,9 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "mypy", specifier = ">=1.13" },
-    { name = "pytest", specifier = ">=8.3" },
-    { name = "pytest-asyncio", specifier = ">=0.24" },
-    { name = "pytest-httpx", specifier = ">=0.34" },
-    { name = "ruff", specifier = ">=0.8" },
+    { name = "mypy", specifier = ">=2.1.0" },
+    { name = "pytest", specifier = ">=9.1.0" },
+    { name = "pytest-asyncio", specifier = ">=1.4.0" },
+    { name = "pytest-httpx", specifier = ">=0.36.2" },
+    { name = "ruff", specifier = ">=0.15.17" },
 ]

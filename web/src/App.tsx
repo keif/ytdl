@@ -93,9 +93,14 @@ export default function App() {
       return;
     }
 
+    // Synchronously enter loading state so any previously-rendered preview
+    // (and its Download button) is replaced immediately. Without this, a
+    // user retyping a URL would see the OLD preview's Download button stay
+    // clickable for up to 500ms — clicking it would enqueue the wrong URL.
+    setPreview({ kind: "loading", url: trimmed });
+
     previewDebounce.current = window.setTimeout(() => {
       previewDebounce.current = null;
-      setPreview({ kind: "loading", url: trimmed });
       const ac = new AbortController();
       previewAbort.current = ac;
       (async () => {

@@ -8,7 +8,7 @@ dependencies = [
   "uvicorn[standard]>=0.32",
   "sqlmodel>=0.0.38",
   "yt-dlp>=2024.12.13",
-  "typer>=0.13",
+  "typer>=0.26.7",
   "httpx>=0.28.1",
   "rich>=15.0.0",
 ]

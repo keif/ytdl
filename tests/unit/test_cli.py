@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+import typer
 from typer.testing import CliRunner
 
-from ytdl.cli import app
+from ytdl.cli import _parse_pick, app
 
 runner = CliRunner()
 
@@ -29,3 +31,97 @@ def test_cookies_use_rejects_unsupported(tmp_data_dir: Path) -> None:
     result = runner.invoke(app, ["cookies", "use", "lynx"])
     assert result.exit_code != 0
     assert "unsupported" in result.output.lower()
+
+
+# ---- _parse_pick ----
+
+
+def test_parse_pick_single_indices() -> None:
+    assert _parse_pick("1,3,7", max_index=10) == [1, 3, 7]
+
+
+def test_parse_pick_ranges_and_dedup() -> None:
+    assert _parse_pick("1,3,5-9", max_index=10) == [1, 3, 5, 6, 7, 8, 9]
+    # Overlapping range + index dedupe.
+    assert _parse_pick("1-3,2,3,4", max_index=10) == [1, 2, 3, 4]
+
+
+def test_parse_pick_rejects_out_of_range() -> None:
+    with pytest.raises(typer.BadParameter):
+        _parse_pick("1,99", max_index=10)
+
+
+def test_parse_pick_rejects_empty() -> None:
+    with pytest.raises(typer.BadParameter):
+        _parse_pick("", max_index=10)
+    with pytest.raises(typer.BadParameter):
+        _parse_pick(",,,", max_index=10)
+
+
+def test_parse_pick_rejects_inverted_range() -> None:
+    with pytest.raises(typer.BadParameter):
+        _parse_pick("9-3", max_index=10)
+
+
+def test_parse_pick_rejects_garbage() -> None:
+    with pytest.raises(typer.BadParameter):
+        _parse_pick("1,abc", max_index=10)
+    with pytest.raises(typer.BadParameter):
+        _parse_pick("1-foo", max_index=10)
+
+
+# ---- preview command ----
+
+
+def test_preview_command_prints_entries(
+    tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "ytdl.downloader.probe",
+        lambda url, cookies_browser=None: {
+            "_type": "playlist",
+            "title": "PL",
+            "entries": [
+                {"id": "a", "title": "Alpha", "webpage_url": "https://x/a"},
+                {"id": "b", "title": "Bravo", "webpage_url": "https://x/b"},
+            ],
+        },
+    )
+    result = runner.invoke(app, ["preview", "https://x/list"])
+    assert result.exit_code == 0
+    assert "Alpha" in result.output
+    assert "Bravo" in result.output
+
+
+def test_queue_add_with_pick_only_enqueues_picked(
+    tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "ytdl.downloader.probe",
+        lambda url, cookies_browser=None: {
+            "_type": "playlist",
+            "title": "PL",
+            "entries": [
+                {"id": "a", "title": "A", "webpage_url": "https://x/a"},
+                {"id": "b", "title": "B", "webpage_url": "https://x/b"},
+                {"id": "c", "title": "C", "webpage_url": "https://x/c"},
+                {"id": "d", "title": "D", "webpage_url": "https://x/d"},
+            ],
+        },
+    )
+    result = runner.invoke(
+        app, ["queue", "add", "https://x/list", "--pick", "1,3-4"]
+    )
+    assert result.exit_code == 0, result.output
+    # 3 of 4 entries queued.
+    from ytdl.config import load_config
+    from ytdl.db import connect, migrate
+    from ytdl.queue import list_jobs
+
+    cfg = load_config()
+    conn = connect(cfg.db_path)
+    migrate(conn)
+    jobs = list_jobs(conn)
+    conn.close()
+    urls = {j.url for j in jobs}
+    assert urls == {"https://x/a", "https://x/c", "https://x/d"}

@@ -52,15 +52,50 @@ def _to_out(job: Job) -> JobOut:
 @router.post("", status_code=201)
 def post_job(payload: JobCreate, request: Request) -> JobOut:
     cfg = request.app.state.config
+    fmt = payload.format_pref or cfg.default_format
+    out_dir = str(cfg.output_dir)
     conn = _conn(request)
     try:
-        job_id = enqueue(
-            conn,
-            url=payload.url,
-            kind=JobKind.VIDEO,  # playlist detection happens at worker time
-            format_pref=payload.format_pref or cfg.default_format,
-            output_dir=str(cfg.output_dir),
-        )
+        if payload.url is not None:
+            job_id = enqueue(
+                conn,
+                url=payload.url,
+                kind=JobKind.VIDEO,  # playlist detection happens at worker time
+                format_pref=fmt,
+                output_dir=out_dir,
+            )
+        else:
+            # Picked subset from a playlist preview. Each URL becomes its own
+            # standalone VIDEO job — no synthetic parent (yet); the UI shows
+            # them as N rows. Wrap in a single immediate-write transaction so
+            # the batch is atomic and observers don't see a partial fan-out.
+            assert payload.urls is not None  # exactly_one_source guarantees
+            conn.execute("BEGIN IMMEDIATE")
+            committed = False
+            try:
+                first_id: str | None = None
+                for child_url in payload.urls:
+                    job_id = enqueue(
+                        conn,
+                        url=child_url,
+                        kind=JobKind.VIDEO,
+                        format_pref=fmt,
+                        output_dir=out_dir,
+                    )
+                    if first_id is None:
+                        first_id = job_id
+                conn.execute("COMMIT")
+                committed = True
+                assert first_id is not None
+                job_id = first_id
+            except BaseException:
+                if not committed:
+                    try:
+                        conn.execute("ROLLBACK")
+                    except Exception:
+                        pass
+                raise
+
         job = get_job(conn, job_id)
         assert job is not None
         return _to_out(job)

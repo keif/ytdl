@@ -368,6 +368,109 @@ async def test_cancel_during_probe_marks_new_children_canceled(tmp_path: Path) -
         )
 
 
+@pytest.mark.asyncio
+async def test_cancel_during_expansion_loop_marks_late_children_canceled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the user cancels AFTER probe returns but DURING the child-enqueue
+    loop, every child (early and late) ends up CANCELED and the parent
+    finalizes CANCELED — no PENDING children left in the queue.
+
+    To make the mid-loop race deterministic, we monkeypatch ytdl.workers.enqueue
+    so that after the first few children are enqueued we trigger the cancel
+    from another connection. The worker keeps inserting children as PENDING
+    (snapshot is stale) and the post-loop recheck must snap them all to
+    CANCELED.
+    """
+    import threading
+
+    import ytdl.workers as workers_mod
+    from ytdl.queue import cancel_with_children
+    from ytdl.workers import Supervisor
+
+    db = tmp_path / "t.db"
+    conn = connect(db)
+    migrate(conn)
+    parent_id = enqueue(
+        conn,
+        url="https://yt/playlist?list=PL",
+        kind=JobKind.VIDEO,
+        format_pref="best",
+        output_dir=str(tmp_path),
+    )
+    conn.close()
+
+    def fake_probe(url: str) -> dict:
+        return {
+            "_type": "playlist",
+            "title": "P",
+            "entries": [
+                {"url": f"https://yt/e{i}", "id": f"e{i}", "title": f"E{i}"}
+                for i in range(20)
+            ],
+        }
+
+    real_enqueue = workers_mod.enqueue
+    enqueue_count = {"n": 0}
+    cancel_fired = threading.Event()
+
+    def spy_enqueue(*args, **kwargs):
+        # After the third child is inserted, race the cancel in from a
+        # fresh connection. Then keep enqueueing — the worker's pre-loop
+        # snapshot of parent_canceled_pre is stale and the post-loop
+        # recheck has to clean up.
+        child_id = real_enqueue(*args, **kwargs)
+        enqueue_count["n"] += 1
+        if enqueue_count["n"] == 3 and not cancel_fired.is_set():
+            cancel_conn = connect(db)
+            try:
+                cancel_with_children(cancel_conn, parent_id)
+            finally:
+                cancel_conn.close()
+            cancel_fired.set()
+        return child_id
+
+    monkeypatch.setattr(workers_mod, "enqueue", spy_enqueue)
+
+    bus = EventsBus()
+    sup = Supervisor(
+        db_path=db,
+        workers=1,
+        bus=bus,
+        downloader=lambda job, ctx: (_ for _ in ()).throw(
+            AssertionError("no download should run")
+        ),
+        probe=fake_probe,
+        cookies_browser=None,
+        retry_delays_s=(0, 0),
+        rate_limit_delay_s=0,
+    )
+    await sup.start()
+    await sup.wait_idle(timeout=3.0)
+    await sup.stop()
+
+    conn = connect(db)
+    parent = get_job(conn, parent_id)
+    kids = children_of(conn, parent_id)
+    pending_count = sum(1 for c in kids if c.status == JobStatus.PENDING)
+    canceled_count = sum(1 for c in kids if c.status == JobStatus.CANCELED)
+    conn.close()
+
+    assert cancel_fired.is_set(), "test setup bug: cancel never raced into the loop"
+    assert parent is not None
+    assert parent.status == JobStatus.CANCELED, (
+        f"parent should end CANCELED, got {parent.status}"
+    )
+    assert pending_count == 0, (
+        f"no children should be left PENDING; got {pending_count} pending / "
+        f"{canceled_count} canceled / {len(kids)} total"
+    )
+    # All 20 children expected to be CANCELED (terminal).
+    assert canceled_count == 20, (
+        f"expected 20 canceled children, got {canceled_count}"
+    )
+
+
 def test_default_probe_adapter_forwards_cookies(monkeypatch: pytest.MonkeyPatch) -> None:
     """The supervisor's default probe path must pass the configured browser to yt-dlp."""
     captured: dict = {}

@@ -29,6 +29,11 @@ class Config:
     cookies_browser: str | None
     default_format: str
     log_level: str = "INFO"
+    # How `cookies_browser` was resolved:
+    #   "explicit"   — pinned via env var or TOML
+    #   "autodetect" — picked by scanning standard cookie-store paths
+    #   "none"       — no value pinned and nothing detected
+    cookies_source: str = "none"
 
 
 def _default_output_dir() -> Path:
@@ -74,11 +79,22 @@ def load_config() -> Config:
     workers = int(raw.get("workers", 2))
     if workers < 1:
         raise ValueError("workers must be >= 1")
+    cookies_browser = raw.get("cookies_browser")
+    cookies_source = "explicit"
+    if not cookies_browser:
+        # No env / TOML pin — fall back to scanning standard cookie-store
+        # paths so a fresh install doesn't need any setup before the first
+        # YouTube download.
+        from ytdl.cookies import autodetect_browser
+
+        cookies_browser = autodetect_browser()
+        cookies_source = "autodetect" if cookies_browser else "none"
     return Config(
         output_dir=Path(raw.get("output_dir", _default_output_dir())),
         db_path=Path(raw.get("db_path", _default_db_path())),
         workers=workers,
-        cookies_browser=raw.get("cookies_browser"),
+        cookies_browser=cookies_browser,
         default_format=raw.get("default_format", "best"),
         log_level=raw.get("log_level", "INFO"),
+        cookies_source=cookies_source,
     )

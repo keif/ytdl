@@ -219,6 +219,18 @@ def serve(
     from ytdl.api import build_app
 
     cfg = load_config()
+    if cfg.cookies_browser:
+        if cfg.cookies_source == "autodetect":
+            console.print(
+                f"[cyan]cookies:[/cyan] using {cfg.cookies_browser} (auto-detected)"
+            )
+        else:
+            console.print(f"[cyan]cookies:[/cyan] using {cfg.cookies_browser}")
+    else:
+        console.print(
+            "[yellow]cookies:[/yellow] none detected; "
+            "YouTube auth-gated content may fail"
+        )
     app_obj = build_app(cfg)
     uvicorn.run(app_obj, host=host, port=port, log_level=cfg.log_level.lower())
 
@@ -326,6 +338,21 @@ def queue_retry(job_id: str) -> None:
         )
         raise typer.Exit(code=1)
     console.print(f"queued retry as [bold]{new_id}[/bold]")
+
+
+@cookies_app.command("status")
+def cookies_status() -> None:
+    """Print the cookies browser that will be used at job time."""
+    cfg = load_config()
+    if cfg.cookies_browser:
+        console.print(
+            f"browser: [bold]{cfg.cookies_browser}[/bold] ({cfg.cookies_source})"
+        )
+    else:
+        console.print("browser: [yellow]none detected[/yellow]")
+        console.print(
+            "hint: run `ytdl cookies use <browser>` to set one explicitly"
+        )
 
 
 @cookies_app.command("use")

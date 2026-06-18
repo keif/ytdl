@@ -47,13 +47,22 @@ describe("App SSE refresh debounce", () => {
     globalThis.fetch = originalFetch;
   });
 
+  // Only the /jobs refreshes matter for this debounce assertion. Other
+  // mount-time fetches (e.g. /status) would otherwise inflate the count.
+  function jobsCallCount(): number {
+    return fetchSpy.mock.calls.filter((c) => {
+      const url = c[0];
+      return typeof url === "string" && (url === "/jobs" || url.startsWith("/jobs?"));
+    }).length;
+  }
+
   it("coalesces a burst of SSE events into one refresh", async () => {
     render(<App />);
     // initial refresh from mount — flush microtasks so listJobs resolves.
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(jobsCallCount()).toBe(1);
 
     const es = esInstances[0];
     expect(es).toBeDefined();
@@ -65,14 +74,14 @@ describe("App SSE refresh debounce", () => {
         } as MessageEvent);
       }
     });
-    // No additional fetch yet — still inside the debounce window.
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    // No additional jobs fetch yet — still inside the debounce window.
+    expect(jobsCallCount()).toBe(1);
     // Advance past the debounce window. The debounce callback fires and
     // calls fetch synchronously inside refresh().
     await act(async () => {
       await vi.advanceTimersByTimeAsync(250);
     });
     // Exactly ONE additional refresh, regardless of the 50 events.
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(jobsCallCount()).toBe(2);
   });
 });

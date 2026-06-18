@@ -1,24 +1,44 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { cancelJob, createJob, listJobs, type Job } from "./api";
 import { SubmitForm } from "./components/SubmitForm";
 import { JobList } from "./components/JobList";
 import { useJobsStream } from "./hooks/useJobsStream";
 
+const REFRESH_DEBOUNCE_MS = 200;
+
 export default function App() {
   const [jobs, setJobs] = useState<Job[]>([]);
+  const debounceTimer = useRef<number | null>(null);
 
   async function refresh() {
     const list = await listJobs();
     setJobs(list.jobs);
   }
 
+  function scheduleRefresh() {
+    if (debounceTimer.current !== null) {
+      window.clearTimeout(debounceTimer.current);
+    }
+    debounceTimer.current = window.setTimeout(() => {
+      debounceTimer.current = null;
+      refresh().catch(() => {});
+    }, REFRESH_DEBOUNCE_MS);
+  }
+
   useEffect(() => {
     refresh().catch(() => {});
+    return () => {
+      if (debounceTimer.current !== null) {
+        window.clearTimeout(debounceTimer.current);
+      }
+    };
   }, []);
 
   const sseState = useJobsStream(() => {
-    // any event => refresh listing
-    refresh().catch(() => {});
+    // Trailing-edge debounce: bursts of events (e.g. playlist expansion)
+    // result in at most one refresh per REFRESH_DEBOUNCE_MS instead of
+    // one per event.
+    scheduleRefresh();
   });
 
   return (

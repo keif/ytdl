@@ -69,11 +69,11 @@ _FORBIDDEN_PATTERNS = (
     re.compile(r"HTTP Error 403", re.I),
     re.compile(r"requested format is not available", re.I),
     re.compile(r"no video formats found", re.I),
-    re.compile(r"this video is unavailable in your country", re.I),
 )
 _GEO_PATTERNS = (
     re.compile(r"geo restricted", re.I),
     re.compile(r"not available in your country", re.I),
+    re.compile(r"this video is unavailable in your country", re.I),
 )
 _UNAVAILABLE_PATTERNS = (
     re.compile(r"video unavailable", re.I),

@@ -11,7 +11,7 @@ export function JobRow({ job, onCancel, onRetry }: Props) {
   const done = job.bytes_done ?? 0;
   const pct = total ? Math.min(100, Math.floor((done * 100) / total)) : 0;
   const cancellable = job.status === "pending" || job.status === "running";
-  const retryable = job.status === "failed" || job.status === "canceled";
+  const retryable = job.status === "failed" || job.status === "canceled" || job.status === "done";
   return (
     <li className="flex flex-col gap-1 p-3 border-b border-neutral-800">
       <div className="flex items-center justify-between">

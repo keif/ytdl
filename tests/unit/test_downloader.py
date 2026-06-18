@@ -104,6 +104,13 @@ def test_classify_no_video_formats_as_forbidden() -> None:
     )
 
 
+def test_classify_country_unavailability_as_geo_not_forbidden() -> None:
+    """Country-only block (no 403, no format issue) is geo-blocked, not
+    forbidden. Cookies don't fix it."""
+    msg = "This video is unavailable in your country"
+    assert classify_error(_err(msg)) == Classification.GEO_BLOCKED
+
+
 def test_classify_disk_full() -> None:
     err = OSError(28, "No space left on device")
     assert classify_error(err) == Classification.DISK_FULL

@@ -357,4 +357,6 @@ async def test_supervisor_probe_403_includes_cookie_hint(tmp_path: Path) -> None
     assert job is not None
     assert job.status == JobStatus.FAILED
     assert job.error and "[probe:forbidden]" in job.error
+    # Hint must mention both common fixes (JS runtime AND cookies).
+    assert job.error and "deno" in job.error.lower()
     assert job.error and "cookies use" in job.error.lower()

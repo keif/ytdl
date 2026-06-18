@@ -258,6 +258,29 @@ def test_finish_if_status_cas_hits_when_status_matches(tmp_path: Path) -> None:
     assert row["output_path"] == "/out/x.mp4"
 
 
+def test_claim_one_skips_children_of_non_running_parent(tmp_path: Path) -> None:
+    """A PENDING child whose parent is no longer RUNNING must not be claimed."""
+    conn = _setup(tmp_path)
+    parent = enqueue(conn, url="p", kind=JobKind.VIDEO, format_pref="best", output_dir="/o")
+    enqueue(
+        conn,
+        url="c",
+        kind=JobKind.VIDEO,
+        format_pref="best",
+        output_dir="/o",
+        parent_job_id=parent,
+    )
+    # Parent canceled before its child gets claimed.
+    conn.execute("UPDATE jobs SET status='canceled' WHERE id=?", (parent,))
+    claimed = claim_one(conn)
+    assert claimed is None
+    # An unrelated top-level pending job should still claim fine.
+    standalone = enqueue(conn, url="s", kind=JobKind.VIDEO, format_pref="best", output_dir="/o")
+    claimed = claim_one(conn)
+    assert claimed is not None
+    assert claimed.id == standalone
+
+
 def test_cancel_with_children_leaves_terminal_parent_alone(tmp_path: Path) -> None:
     conn = _setup(tmp_path)
     job_id = enqueue(

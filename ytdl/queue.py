@@ -93,7 +93,8 @@ def enqueue(
 def claim_one(conn: sqlite3.Connection) -> Job | None:
     """Atomically pick the oldest pending job and mark it running.
 
-    Uses RETURNING to make the read+write atomic from SQLite 3.35+.
+    Skips PENDING jobs whose parent is no longer RUNNING (e.g., parent was
+    canceled before we got to its children).
     """
     started = _now_ms()
     row = conn.execute(
@@ -101,14 +102,21 @@ def claim_one(conn: sqlite3.Connection) -> Job | None:
         UPDATE jobs
         SET status = ?, started_at = ?, attempts = attempts + 1
         WHERE id = (
-            SELECT id FROM jobs
-            WHERE status = ?
-            ORDER BY created_at ASC
+            SELECT j.id FROM jobs j
+            LEFT JOIN jobs p ON p.id = j.parent_job_id
+            WHERE j.status = ?
+              AND (j.parent_job_id IS NULL OR p.status = ?)
+            ORDER BY j.created_at ASC
             LIMIT 1
         )
         RETURNING *
         """,
-        (JobStatus.RUNNING.value, started, JobStatus.PENDING.value),
+        (
+            JobStatus.RUNNING.value,
+            started,
+            JobStatus.PENDING.value,
+            JobStatus.RUNNING.value,
+        ),
     ).fetchone()
     if row is None:
         return None

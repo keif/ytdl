@@ -286,6 +286,88 @@ async def test_cancel_playlist_parent_during_download_marks_parent_canceled(
         )
 
 
+@pytest.mark.asyncio
+async def test_cancel_during_probe_marks_new_children_canceled(tmp_path: Path) -> None:
+    """If the user cancels while the parent is mid-probe, the children
+    enqueued from the completed probe should land directly in CANCELED."""
+    import asyncio
+
+    from ytdl.queue import cancel_with_children
+    from ytdl.workers import Supervisor
+
+    db = tmp_path / "t.db"
+    conn = connect(db)
+    migrate(conn)
+    parent_id = enqueue(
+        conn,
+        url="https://yt/playlist?list=PL",
+        kind=JobKind.VIDEO,
+        format_pref="best",
+        output_dir=str(tmp_path),
+    )
+    conn.close()
+
+    probe_started = asyncio.Event()
+    probe_unblock = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def fake_probe(url: str) -> dict:
+        # Signal main coro that probe is running, then wait for the unblock.
+        # asyncio.Event lives on the loop; cross-thread set via call_soon_threadsafe.
+        loop.call_soon_threadsafe(probe_started.set)
+        import time as _t
+
+        deadline = _t.monotonic() + 3.0
+        while not probe_unblock.is_set() and _t.monotonic() < deadline:
+            _t.sleep(0.02)
+        return {
+            "_type": "playlist",
+            "title": "P",
+            "entries": [
+                {"url": "https://yt/a", "id": "a", "title": "A"},
+                {"url": "https://yt/b", "id": "b", "title": "B"},
+            ],
+        }
+
+    bus = EventsBus()
+    sup = Supervisor(
+        db_path=db,
+        workers=1,
+        bus=bus,
+        downloader=lambda job, ctx: (_ for _ in ()).throw(
+            AssertionError("no download should run")
+        ),
+        probe=fake_probe,
+        cookies_browser=None,
+        retry_delays_s=(0, 0),
+        rate_limit_delay_s=0,
+    )
+    await sup.start()
+    await asyncio.wait_for(probe_started.wait(), timeout=3.0)
+
+    # Probe is in flight; cancel the parent now.
+    conn = connect(db)
+    cancel_with_children(conn, parent_id)
+    conn.close()
+
+    # Let the probe complete; the worker should mark every child CANCELED.
+    probe_unblock.set()
+    await sup.wait_idle(timeout=3.0)
+    await sup.stop()
+
+    conn = connect(db)
+    parent = get_job(conn, parent_id)
+    kids = children_of(conn, parent_id)
+    conn.close()
+    assert parent is not None
+    assert parent.status == JobStatus.CANCELED
+    assert len(kids) == 2
+    for c in kids:
+        assert c.status == JobStatus.CANCELED, (
+            f"child {c.id} should land CANCELED after late expansion, got {c.status}"
+        )
+
+
 def test_default_probe_adapter_forwards_cookies(monkeypatch: pytest.MonkeyPatch) -> None:
     """The supervisor's default probe path must pass the configured browser to yt-dlp."""
     captured: dict = {}

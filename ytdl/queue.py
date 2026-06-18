@@ -120,7 +120,6 @@ def claim_one(conn: sqlite3.Connection) -> Job | None:
     ).fetchone()
     if row is None:
         return None
-    record_event(conn, row["id"], "started", {})
     return _row_to_job(row)
 
 
@@ -200,7 +199,14 @@ def finish(
     status: JobStatus,
     output_path: str | None = None,
     error: str | None = None,
-) -> None:
+) -> int:
+    """Finalize a job and record the lifecycle event.
+
+    Returns the id of the inserted events row so callers can publish it on the
+    bus as ``_event_id`` and let the SSE formatter emit it as the SSE ``id:``
+    line. Without that id the browser's ``EventSource`` has no cursor to send
+    on reconnect and the replay path can't fill the gap.
+    """
     conn.execute(
         """
         UPDATE jobs SET
@@ -212,7 +218,7 @@ def finish(
         """,
         (status.value, output_path, error, _now_ms(), job_id),
     )
-    record_event(
+    return record_event(
         conn,
         job_id,
         {
@@ -232,8 +238,11 @@ def finish_if_status(
     new_status: JobStatus,
     output_path: str | None = None,
     error: str | None = None,
-) -> bool:
+) -> int | None:
     """Atomically finish a job only if it's currently in expected_status.
+
+    Returns the inserted events row id on a successful CAS, ``None`` when the
+    CAS misses (status was something other than ``expected_status``).
 
     Used by the playlist reaper so a concurrent cancel can't be overwritten:
     if the parent flipped from RUNNING to CANCELING between read and write,
@@ -264,9 +273,10 @@ def finish_if_status(
             JobStatus.FAILED: "failed",
             JobStatus.CANCELED: "canceled",
         }.get(new_status, "log")
-        record_event(conn, job_id, kind, {"output_path": output_path, "error": error})
-        return True
-    return False
+        return record_event(
+            conn, job_id, kind, {"output_path": output_path, "error": error}
+        )
+    return None
 
 
 def cancel(conn: sqlite3.Connection, job_id: str) -> bool:

@@ -451,6 +451,41 @@ def revive_orphans(conn: sqlite3.Connection, *, max_attempts: int = 3) -> int:
     return revived + exhausted + canceling_now
 
 
+def retry_job(conn: sqlite3.Connection, job_id: str) -> str | None:
+    """Create a new PENDING job from an existing terminal one.
+
+    Returns the new job id on success, or ``None`` when the source job
+    doesn't exist or is not in a retryable state (must be FAILED, CANCELED,
+    or DONE — PENDING and RUNNING are owned by the queue and would dup).
+
+    The original row is left untouched so the audit trail is preserved; the
+    retry is a fresh job, detached from any playlist parent.
+    """
+    row = conn.execute(
+        "SELECT url, format_pref, output_dir, kind, status FROM jobs WHERE id = ?",
+        (job_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    if row["status"] not in (
+        JobStatus.FAILED.value,
+        JobStatus.CANCELED.value,
+        JobStatus.DONE.value,
+    ):
+        return None
+    # Always re-enqueue as VIDEO. The worker re-detects playlists by probing
+    # the URL; restoring the original PLAYLIST kind would skip detection and
+    # the download path would choke on a playlist URL as if it were a video.
+    return enqueue(
+        conn,
+        url=row["url"],
+        kind=JobKind.VIDEO,
+        format_pref=row["format_pref"],
+        output_dir=row["output_dir"],
+        parent_job_id=None,
+    )
+
+
 def promote_to_playlist(
     conn: sqlite3.Connection, job_id: str, *, title: str | None
 ) -> None:

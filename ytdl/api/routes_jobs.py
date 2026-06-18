@@ -11,6 +11,7 @@ from ytdl.queue import (
     enqueue,
     get_job,
     list_jobs,
+    retry_job,
 )
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -137,6 +138,23 @@ def get_endpoint(job_id: str, request: Request) -> JobOut:
         job = get_job(conn, job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="job not found")
+        return _to_out(job)
+    finally:
+        conn.close()
+
+
+@router.post("/{job_id}/retry", status_code=201)
+def retry_endpoint(job_id: str, request: Request) -> JobOut:
+    conn = _conn(request)
+    try:
+        new_id = retry_job(conn, job_id)
+        if new_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail="job not found, or not in a state that can be retried",
+            )
+        job = get_job(conn, new_id)
+        assert job is not None
         return _to_out(job)
     finally:
         conn.close()

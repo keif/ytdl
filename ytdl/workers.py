@@ -274,6 +274,8 @@ class Supervisor:
                 )
 
     async def _download_video(self, conn, job) -> None:
+        loop = asyncio.get_running_loop()
+
         def cancel_flag() -> bool:
             if self._cancel_flags.get(job.id):
                 return True
@@ -281,6 +283,9 @@ class Supervisor:
             return current is not None and current.status == JobStatus.CANCELING
 
         def on_progress(d: dict) -> None:
+            # Runs on the worker thread spawned by asyncio.to_thread below.
+            # Anything touching loop-owned state (the bus's asyncio.Queues)
+            # must be marshalled back to the loop via publish_threadsafe.
             if d.get("status") == "downloading":
                 update_progress(
                     conn,
@@ -290,7 +295,7 @@ class Supervisor:
                     eta_s=int(d["eta"]) if d.get("eta") else None,
                     filesize_bytes=d.get("total_bytes") or d.get("total_bytes_estimate"),
                 )
-            self._bus.publish(
+            self._bus.publish_threadsafe(
                 {
                     "event": "progress",
                     "job_id": job.id,
@@ -299,7 +304,8 @@ class Supervisor:
                     "total_bytes": d.get("total_bytes") or d.get("total_bytes_estimate"),
                     "speed": d.get("speed"),
                     "eta": d.get("eta"),
-                }
+                },
+                loop,
             )
 
         ctx = DownloadContext(

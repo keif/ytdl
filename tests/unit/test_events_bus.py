@@ -45,3 +45,23 @@ async def test_unsubscribe_on_exit() -> None:
     async with bus.subscribe():
         assert bus.subscriber_count == 1
     assert bus.subscriber_count == 0
+
+
+@pytest.mark.asyncio
+async def test_publish_threadsafe_from_worker_thread() -> None:
+    """Event published from a worker thread via publish_threadsafe must arrive."""
+    import threading
+
+    bus = EventsBus(max_per_subscriber=10)
+    loop = asyncio.get_running_loop()
+
+    async with bus.subscribe() as q:
+        def worker() -> None:
+            bus.publish_threadsafe({"from": "worker_thread"}, loop)
+
+        t = threading.Thread(target=worker)
+        t.start()
+        t.join(timeout=1.0)
+
+        msg = await asyncio.wait_for(q.get(), timeout=1.0)
+        assert msg == {"from": "worker_thread"}

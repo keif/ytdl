@@ -31,6 +31,18 @@ class EventsBus:
                     pass
             q.put_nowait(event)
 
+    def publish_threadsafe(
+        self, event: dict[str, Any], loop: asyncio.AbstractEventLoop
+    ) -> None:
+        """Schedule a publish onto the event loop from a non-loop thread.
+
+        Use this from worker threads spawned by ``asyncio.to_thread``. The
+        publish runs on the loop, which owns the asyncio.Queue state — direct
+        ``q.put_nowait`` calls from another thread can corrupt internal future
+        and waiter state.
+        """
+        loop.call_soon_threadsafe(self.publish, event)
+
     @contextlib.asynccontextmanager
     async def subscribe(self) -> AsyncIterator[asyncio.Queue[dict[str, Any]]]:
         q: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=self._max)

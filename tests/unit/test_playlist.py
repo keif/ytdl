@@ -188,6 +188,104 @@ async def test_empty_playlist_finishes_parent_immediately(tmp_path: Path) -> Non
     assert parent.error == "empty playlist"
 
 
+@pytest.mark.asyncio
+async def test_cancel_playlist_parent_during_download_marks_parent_canceled(
+    tmp_path: Path,
+) -> None:
+    """End-to-end: cancel a playlist parent while children are downloading.
+
+    All children abort and the parent ends up CANCELED (not DONE).
+    """
+    import asyncio
+    import time
+
+    from ytdl.queue import cancel_with_children
+    from ytdl.workers import Supervisor
+
+    db = tmp_path / "t.db"
+    conn = connect(db)
+    migrate(conn)
+    parent_id = enqueue(
+        conn,
+        url="https://yt/playlist?list=PL",
+        kind=JobKind.VIDEO,
+        format_pref="best",
+        output_dir=str(tmp_path),
+    )
+    conn.close()
+
+    def fake_probe(url: str) -> dict:
+        return {
+            "_type": "playlist",
+            "title": "P",
+            "entries": [
+                {"url": "https://yt/a", "id": "a", "title": "A"},
+                {"url": "https://yt/b", "id": "b", "title": "B"},
+            ],
+        }
+
+    first_started = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def fake_download(job, ctx):
+        # Block the worker so cancel can race in. The downloader's progress
+        # hook polls the cancel flag in production; here we simulate by
+        # busy-waiting until ctx.cancel_flag() returns True, then raise the
+        # canonical DownloadCancelled.
+        from ytdl.downloader import DownloadCancelled
+
+        loop.call_soon_threadsafe(first_started.set)
+        # Spin until canceled (with a 2s safety timeout).
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            if ctx.cancel_flag():
+                raise DownloadCancelled()
+            time.sleep(0.02)
+        raise RuntimeError("cancel was not observed within 2s")
+
+    bus = EventsBus()
+    sup = Supervisor(
+        db_path=db,
+        workers=2,
+        bus=bus,
+        downloader=fake_download,
+        probe=fake_probe,
+        cookies_browser=None,
+        retry_delays_s=(0, 0),
+        rate_limit_delay_s=0,
+    )
+    await sup.start()
+    await asyncio.wait_for(first_started.wait(), timeout=3.0)
+
+    # Cascade-cancel the parent (and its children) via the queue helper.
+    conn = connect(db)
+    cancel_with_children(conn, parent_id)
+    # Nudge the supervisor's in-memory flags so spinning workers see the
+    # cancel via the closure check (this avoids relying on the DB-poll path
+    # inside _download_video's cancel_flag).
+    for c in children_of(conn, parent_id):
+        sup.request_cancel(c.id)
+    sup.request_cancel(parent_id)
+    conn.close()
+
+    await sup.wait_idle(timeout=5.0)
+    await sup.stop()
+
+    conn = connect(db)
+    parent = get_job(conn, parent_id)
+    kids = children_of(conn, parent_id)
+    conn.close()
+
+    assert parent is not None
+    assert parent.status == JobStatus.CANCELED, (
+        f"parent should end CANCELED, got {parent.status}"
+    )
+    for c in kids:
+        assert c.status == JobStatus.CANCELED, (
+            f"child {c.id} should end CANCELED, got {c.status}"
+        )
+
+
 def test_default_probe_adapter_forwards_cookies(monkeypatch: pytest.MonkeyPatch) -> None:
     """The supervisor's default probe path must pass the configured browser to yt-dlp."""
     captured: dict = {}

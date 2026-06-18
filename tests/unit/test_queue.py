@@ -8,11 +8,13 @@ from ytdl.db import connect, migrate
 from ytdl.models import JobKind, JobStatus
 from ytdl.queue import (
     cancel,
+    cancel_with_children,
     claim_one,
     enqueue,
     finish,
     get_job,
     list_jobs,
+    promote_to_playlist,
     record_event,
     revive_orphans,
     update_progress,
@@ -137,6 +139,79 @@ def test_cancel_running_goes_to_canceling(tmp_path: Path) -> None:
     cancel(conn, job_id)
     row = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
     assert row["status"] == JobStatus.CANCELING
+
+
+def test_cancel_with_children_no_children(tmp_path: Path) -> None:
+    conn = _setup(tmp_path)
+    job_id = enqueue(
+        conn, url="u", kind=JobKind.VIDEO, format_pref="best", output_dir="/o"
+    )
+    assert cancel_with_children(conn, job_id) is True
+    row = conn.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
+    assert row["status"] == JobStatus.CANCELED.value
+
+
+def test_cancel_with_children_cascades_to_pending_and_running(tmp_path: Path) -> None:
+    conn = _setup(tmp_path)
+    parent = enqueue(
+        conn, url="p", kind=JobKind.VIDEO, format_pref="best", output_dir="/o"
+    )
+    child_pending = enqueue(
+        conn,
+        url="cp",
+        kind=JobKind.VIDEO,
+        format_pref="best",
+        output_dir="/o",
+        parent_job_id=parent,
+    )
+    child_running = enqueue(
+        conn,
+        url="cr",
+        kind=JobKind.VIDEO,
+        format_pref="best",
+        output_dir="/o",
+        parent_job_id=parent,
+    )
+    conn.execute("UPDATE jobs SET status='running' WHERE id=?", (child_running,))
+    child_done = enqueue(
+        conn,
+        url="cd",
+        kind=JobKind.VIDEO,
+        format_pref="best",
+        output_dir="/o",
+        parent_job_id=parent,
+    )
+    conn.execute("UPDATE jobs SET status='done' WHERE id=?", (child_done,))
+    # Promote parent to playlist + flip to RUNNING so cancel routes through
+    # the running branch (the more interesting case post-expansion).
+    promote_to_playlist(conn, parent, title="P")
+    conn.execute("UPDATE jobs SET status='running' WHERE id=?", (parent,))
+
+    assert cancel_with_children(conn, parent) is True
+    statuses = {
+        r["id"]: r["status"]
+        for r in conn.execute(
+            "SELECT id, status FROM jobs WHERE id IN (?, ?, ?, ?)",
+            (parent, child_pending, child_running, child_done),
+        ).fetchall()
+    }
+    # Running parent -> CANCELING (worker reaper will finalize as CANCELED).
+    assert statuses[parent] == JobStatus.CANCELING.value
+    assert statuses[child_pending] == JobStatus.CANCELED.value
+    assert statuses[child_running] == JobStatus.CANCELING.value
+    # Already-terminal child is left alone.
+    assert statuses[child_done] == JobStatus.DONE.value
+
+
+def test_cancel_with_children_leaves_terminal_parent_alone(tmp_path: Path) -> None:
+    conn = _setup(tmp_path)
+    job_id = enqueue(
+        conn, url="u", kind=JobKind.VIDEO, format_pref="best", output_dir="/o"
+    )
+    conn.execute("UPDATE jobs SET status='done' WHERE id=?", (job_id,))
+    assert cancel_with_children(conn, job_id) is False
+    row = conn.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
+    assert row["status"] == JobStatus.DONE.value
 
 
 def test_revive_orphans_resets_running_to_pending(tmp_path: Path) -> None:

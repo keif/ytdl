@@ -65,14 +65,22 @@ That writes the chosen browser into `config.toml`. The CLI (`ytdl get`) picks up
 
 If a download fails with `Sign in to confirm your age` or `Private video`, run `cookies use` to point at the browser where you're actually signed in.
 
-## Note on yt-dlp + JavaScript runtimes
+## yt-dlp's JS runtime requirement (do this — it's not optional in practice)
 
-YouTube's newer extractors evaluate JavaScript that yt-dlp delegates to an external runtime (`deno` by default). Without one, downloads still work but some formats may be unavailable (e.g., specific premium codecs). Install deno once:
+YouTube's extractor sends an obfuscated JavaScript `n` parameter that yt-dlp has to solve before any video format URL is usable. Without a JS runtime installed, yt-dlp logs `n challenge solving failed: Some formats may be missing` and YouTube returns no usable formats — the job fails with `Requested format is not available`.
+
+Install deno once:
 
     brew install deno                                # macOS
     curl -fsSL https://deno.land/install.sh | sh     # Linux
 
-yt-dlp picks it up automatically. No ytdl config change required.
+Confirm it's on `PATH`:
+
+    deno --version
+
+yt-dlp picks it up automatically. No ytdl config change required. See yt-dlp's [EJS wiki page](https://github.com/yt-dlp/yt-dlp/wiki/EJS) for the full background on the n-challenge and the script distribution it uses.
+
+**If a download fails with `[forbidden] ... Requested format is not available`**, this is almost always the JS runtime. Less often it's a cookie issue (`ytdl cookies use chrome`). The error message in the UI suggests both.
 
 ## Commands
 
@@ -128,7 +136,7 @@ Requirements:
 - Python 3.12+ via [uv](https://docs.astral.sh/uv/) (manages venv + lockfile)
 - Node 22+ via [pnpm](https://pnpm.io/) (for the web UI)
 - `ffmpeg` on PATH (yt-dlp uses it to merge separate audio/video streams)
-- `deno` on PATH (optional; some YouTube extractors need it — see above)
+- `deno` on PATH (strongly recommended — yt-dlp's n-challenge solver needs it for most YouTube URLs; see above)
 
 Setup:
 

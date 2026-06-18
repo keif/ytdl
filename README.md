@@ -45,7 +45,7 @@ ytdl reads configuration from, in order of precedence:
 | Worker count | `YTDL_WORKERS` | `workers` | `2` | Concurrent downloads. |
 | Cookie browser | `YTDL_COOKIES_BROWSER` | `cookies_browser` | unset | `chrome`, `firefox`, `brave`, `edge`, `safari`, `opera`, `vivaldi`, `chromium`. |
 | Default format | `YTDL_DEFAULT_FORMAT` | `default_format` | `best` | `best`, `1080p`, `720p`, `audio_only`, or any raw yt-dlp format string. |
-| Log level | `YTDL_LOG_LEVEL` | `log_level` | `INFO` | Passed to uvicorn. |
+| Log level | `YTDL_LOG_LEVEL` | `log_level` | `INFO` | Passed to uvicorn by `ytdl serve`. `dev.sh` and the Docker CMD invoke uvicorn directly and ignore this value. |
 
 Example `~/.config/ytdl/config.toml`:
 
@@ -61,7 +61,7 @@ ytdl never sees your YouTube password. It borrows your browser's signed-in sessi
     ytdl cookies use chrome
     # or: firefox, brave, edge, safari, opera, vivaldi, chromium
 
-That writes the chosen browser into `config.toml`. Every subsequent download (CLI or queued) passes those cookies to yt-dlp.
+That writes the chosen browser into `config.toml`. The CLI (`ytdl get`) picks up the change immediately. A running server (`ytdl serve` / `dev.sh` / Docker) reads the config at startup and keeps it for the process lifetime, so restart the server after `cookies use` for queued downloads to use the new browser.
 
 If a download fails with `Sign in to confirm your age` or `Private video`, run `cookies use` to point at the browser where you're actually signed in.
 
@@ -97,7 +97,7 @@ When `ytdl serve` is running, the API surface is:
 | `GET` | `/jobs` | `?status=&limit=200&offset=0` | List jobs (DESC by `created_at`). |
 | `GET` | `/jobs/{id}` | — | Single job. 404 if unknown. |
 | `DELETE` | `/jobs/{id}` | — | Cancel a job. For a playlist parent, cascades to all children. Returns 204. |
-| `GET` | `/events` | — | Server-Sent Events stream: snapshot, then live lifecycle + progress. Supports `Last-Event-ID` reconnect. |
+| `GET` | `/events` | — | Server-Sent Events stream: snapshot, then live lifecycle + progress. Replays persisted events when a client supplies a `Last-Event-ID` header; live events don't carry IDs yet (see [#3](https://github.com/keif/ytdl/issues/3)). |
 | `GET` | `/library` | `?subdir=...` | List files under `output_dir`. Path traversal returns 400. |
 | `GET` | `/` | — | Built web UI (only present when `ytdl/web/` exists from a `pnpm build`). |
 
@@ -154,7 +154,8 @@ Backend:
 Frontend:
 
     cd web && pnpm test        # Vitest component tests
-    cd web && pnpm test:e2e    # Playwright (scaffold only at the moment)
+
+A Playwright `test:e2e` script exists in `package.json` for future use, but there's no Playwright config or e2e spec yet — running it today will misfire on Vitest tests.
 
 Lint:
 
@@ -164,7 +165,7 @@ The suite covers unit-level behavior (queue CAS, downloader format/error logic, 
 
 ## Known limitations / follow-ups
 
-- SSE live events don't carry an `id:` field yet, so `Last-Event-ID` only advances on replay. After a long disconnect mid-job, the client may dupe or miss live transitions until the next snapshot lands. Tracked as [issue #3](https://github.com/keif/ytdl/issues/3).
+- SSE live events don't carry an `id:` field yet. `EventSource` only advances `Last-Event-ID` on events that have one, so after a disconnect mid-job the browser has no cursor to send and the replay path can't fill the gap. The frontend currently masks this by refreshing the full job list on every event. Tracked as [issue #3](https://github.com/keif/ytdl/issues/3).
 - The web UI refreshes the full job list on every SSE event rather than patching state. Fine at single-user scale; would want granular updates for hundreds of in-flight jobs.
 - `bytes_done` reflects the last throttle tick; for very short downloads the UI may show a partial value briefly before the success path snaps it to 100%.
 

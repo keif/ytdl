@@ -95,3 +95,27 @@ def test_post_jobs_sql_injection_attempt_does_not_execute(client: TestClient) ->
     # Still able to list — table not dropped.
     listed = client.get("/jobs").json()["jobs"]
     assert any(j["url"] == sneaky for j in listed)
+
+
+def test_static_ui_served_when_present(tmp_path: Path) -> None:
+    # Stage a fake built UI in the package's `web/` dir.
+    import ytdl.api as api_pkg
+
+    web_dir = Path(api_pkg.__file__).parent.parent / "web"
+    web_dir.mkdir(parents=True, exist_ok=True)
+    (web_dir / "index.html").write_text("<html>ytdl ui</html>")
+    try:
+        cfg = Config(
+            output_dir=tmp_path / "out",
+            db_path=tmp_path / "ytdl.db",
+            workers=0,
+            cookies_browser=None,
+            default_format="best",
+        )
+        c = TestClient(build_app(cfg))
+        r = c.get("/")
+        assert r.status_code == 200
+        assert "ytdl ui" in r.text
+    finally:
+        (web_dir / "index.html").unlink(missing_ok=True)
+        # leave the dir; .gitignore excludes it

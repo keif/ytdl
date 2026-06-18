@@ -105,3 +105,39 @@ async def test_sse_replays_events_since_last_event_id(tmp_path: Path) -> None:
     await gen.aclose()
     # silence unused-id warnings
     assert id2 > id1
+
+
+def test_format_sse_emits_id_line_when_event_id_in_payload() -> None:
+    """Live bus messages may carry _event_id inline; the formatter must
+    promote it to the SSE 'id:' line so EventSource advances Last-Event-ID."""
+    from ytdl.api.routes_events import _format_sse
+
+    out = _format_sse({"event": "finished", "job_id": "abc", "_event_id": 42})
+    text = out.decode()
+    assert "id: 42" in text
+    # _event_id must NOT leak into the JSON data payload sent to clients.
+    assert "_event_id" not in text
+    assert '"event": "finished"' in text
+
+
+def test_format_sse_no_id_line_when_event_id_absent() -> None:
+    """Non-persisted events (progress, expanded) carry no event id; the
+    formatter must not invent one."""
+    from ytdl.api.routes_events import _format_sse
+
+    out = _format_sse(
+        {"event": "progress", "job_id": "abc", "downloaded_bytes": 100}
+    )
+    text = out.decode()
+    assert "id:" not in text
+
+
+def test_format_sse_does_not_mutate_input_dict() -> None:
+    """Other bus subscribers may be processing the same dict — the formatter
+    must work on a copy when stripping _event_id."""
+    from ytdl.api.routes_events import _format_sse
+
+    payload = {"event": "finished", "job_id": "abc", "_event_id": 7}
+    original = dict(payload)
+    _format_sse(payload)
+    assert payload == original, "input dict must not be mutated by _format_sse"

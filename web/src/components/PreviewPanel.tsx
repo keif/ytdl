@@ -33,12 +33,18 @@ function formatDuration(seconds: number | null): string {
  * "Download N selected" to enqueue only the chosen subset.
  */
 export function PreviewPanel({ title, entries, onConfirm, onCancel }: Props) {
-  const [selected, setSelected] = useState<Set<string>>(
-    () => new Set(entries.map((e) => e.url))
+  const [selected, setSelected] = useState<Set<number>>(
+    () => new Set(entries.map((_, i) => i))
   );
   const [enriched, setEnriched] = useState<Map<string, EnrichedEntry>>(new Map());
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  // Reset selection whenever entries change to avoid stale state from a
+  // previous playlist surviving in the component.
+  useEffect(() => {
+    setSelected(new Set(entries.map((_, i) => i)));
+  }, [entries]);
 
   // Lazy-enrich in batches once the picker is on screen. Sequential
   // batches keep server fan-out bounded; the backend further caps
@@ -74,20 +80,23 @@ export function PreviewPanel({ title, entries, onConfirm, onCancel }: Props) {
   const noneChecked = selected.size === 0;
 
   const orderedSelected = useMemo(() => {
-    return entries.map((e) => e.url).filter((u) => selected.has(u));
+    return entries
+      .map((e, i) => ({ url: e.url, index: i }))
+      .filter(({ index }) => selected.has(index))
+      .map(({ url }) => url);
   }, [entries, selected]);
 
-  function toggle(url: string) {
+  function toggle(index: number) {
     setSelected((prev) => {
       const next = new Set(prev);
-      if (next.has(url)) next.delete(url);
-      else next.add(url);
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
       return next;
     });
   }
 
   function selectAll() {
-    setSelected(new Set(entries.map((e) => e.url)));
+    setSelected(new Set(entries.map((_, i) => i)));
   }
 
   function selectNone() {
@@ -131,7 +140,7 @@ export function PreviewPanel({ title, entries, onConfirm, onCancel }: Props) {
       <ul className="max-h-[28rem] overflow-y-auto divide-y divide-neutral-900">
         {entries.map((entry, idx) => {
           const meta = enriched.get(entry.url);
-          const checked = selected.has(entry.url);
+          const checked = selected.has(idx);
           const displayTitle = meta?.title ?? entry.title ?? entry.url;
           const duration = formatDuration(meta?.duration_s ?? null);
           return (
@@ -142,7 +151,7 @@ export function PreviewPanel({ title, entries, onConfirm, onCancel }: Props) {
               <input
                 type="checkbox"
                 checked={checked}
-                onChange={() => toggle(entry.url)}
+                onChange={() => toggle(idx)}
                 aria-label={`select ${displayTitle}`}
                 className="accent-emerald-500"
               />

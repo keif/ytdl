@@ -132,4 +132,77 @@ describe("PreviewPanel", () => {
     // 65s -> "1:05"
     expect(screen.getByText(/1:05/)).toBeInTheDocument();
   });
+
+  it("treats duplicate URLs as independently selectable", async () => {
+    const dupEntries: PreviewEntry[] = [
+      { url: "https://yt/a", id: "a", title: "Song 1", position: 1 },
+      { url: "https://yt/a", id: "a", title: "Song 1 (dup)", position: 2 },
+      { url: "https://yt/b", id: "b", title: "Song 2", position: 3 },
+    ];
+    const onConfirm = vi.fn(async () => {});
+    render(
+      <PreviewPanel
+        title="Mix"
+        entries={dupEntries}
+        onConfirm={onConfirm}
+        onCancel={() => {}}
+      />,
+    );
+    // All three should be checked by default.
+    const checkboxes = await screen.findAllByRole("checkbox");
+    expect(checkboxes.filter((c) => (c as HTMLInputElement).checked).length).toBe(3);
+    // Unchecking the first duplicate must NOT affect the second.
+    await act(async () => {
+      checkboxes[0].click();
+    });
+    expect((checkboxes[0] as HTMLInputElement).checked).toBe(false);
+    expect((checkboxes[1] as HTMLInputElement).checked).toBe(true);
+    expect((checkboxes[2] as HTMLInputElement).checked).toBe(true);
+    // Confirm enqueues 2 URLs in original order.
+    const confirmBtn = screen.getByRole("button", { name: /Download 2 selected/i });
+    await act(async () => {
+      confirmBtn.click();
+    });
+    expect(onConfirm).toHaveBeenCalledWith(["https://yt/a", "https://yt/b"]);
+  });
+
+  it("resets selection when entries prop changes", async () => {
+    const onConfirm = vi.fn(async () => {});
+    const firstEntries: PreviewEntry[] = [
+      { url: "https://yt/a", id: "a", title: "A1", position: 1 },
+      { url: "https://yt/b", id: "b", title: "A2", position: 2 },
+    ];
+    const { rerender } = render(
+      <PreviewPanel
+        title="A"
+        entries={firstEntries}
+        onConfirm={onConfirm}
+        onCancel={() => {}}
+      />,
+    );
+    // Uncheck one row in the first playlist.
+    let checkboxes = await screen.findAllByRole("checkbox");
+    await act(async () => {
+      checkboxes[0].click();
+    });
+    expect((checkboxes[0] as HTMLInputElement).checked).toBe(false);
+
+    // Re-render with a different playlist.
+    const secondEntries: PreviewEntry[] = [
+      { url: "https://yt/x", id: "x", title: "B1", position: 1 },
+      { url: "https://yt/y", id: "y", title: "B2", position: 2 },
+      { url: "https://yt/z", id: "z", title: "B3", position: 3 },
+    ];
+    rerender(
+      <PreviewPanel
+        title="B"
+        entries={secondEntries}
+        onConfirm={onConfirm}
+        onCancel={() => {}}
+      />,
+    );
+    checkboxes = await screen.findAllByRole("checkbox");
+    // All three rows of the new playlist should be selected.
+    expect(checkboxes.filter((c) => (c as HTMLInputElement).checked).length).toBe(3);
+  });
 });

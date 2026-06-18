@@ -7,6 +7,18 @@ import pytest
 from ytdl.cookies import SUPPORTED_BROWSERS, normalize_browser
 
 
+@pytest.fixture(autouse=True)
+def _isolate_xdg_config_home(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests in this file monkeypatch ``Path.home`` and write fake cookie
+    stores under it. On Linux runners with ``XDG_CONFIG_HOME`` set,
+    Chromium-family autodetect would look there instead, missing the
+    fixtures. Clear the env var so detection consistently uses ~/.config
+    under the patched home. Tests that intentionally exercise the
+    XDG_CONFIG_HOME path re-set it explicitly via ``monkeypatch.setenv``.
+    """
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+
+
 def test_supported_browsers_includes_majors() -> None:
     assert "chrome" in SUPPORTED_BROWSERS
     assert "firefox" in SUPPORTED_BROWSERS

@@ -65,14 +65,22 @@ That writes the chosen browser into `config.toml`. The CLI (`ytdl get`) picks up
 
 If a download fails with `Sign in to confirm your age` or `Private video`, run `cookies use` to point at the browser where you're actually signed in.
 
-## Note on yt-dlp + JavaScript runtimes
+## yt-dlp's JS runtime (recommended)
 
-YouTube's newer extractors evaluate JavaScript that yt-dlp delegates to an external runtime (`deno` by default). Without one, downloads still work but some formats may be unavailable (e.g., specific premium codecs). Install deno once:
+YouTube sometimes wraps format URLs with an obfuscated JavaScript `n` parameter that yt-dlp has to solve to get a usable URL. Without a JS runtime installed, you'll see `n challenge solving failed: Some formats may be missing` and — depending on which format yt-dlp picks — the job may fail with `Requested format is not available`. yt-dlp has native paths that handle some URLs without a runtime, so it's not a hard requirement, but a runtime closes the most common failure mode you're likely to hit.
+
+Install deno once:
 
     brew install deno                                # macOS
     curl -fsSL https://deno.land/install.sh | sh     # Linux
 
-yt-dlp picks it up automatically. No ytdl config change required.
+Confirm it's on `PATH`:
+
+    deno --version
+
+yt-dlp picks it up automatically. No ytdl config change required. See yt-dlp's [EJS wiki page](https://github.com/yt-dlp/yt-dlp/wiki/EJS) for the full background on the n-challenge and the script distribution it uses.
+
+**If a download fails with `[forbidden] ... Requested format is not available`**, this is almost always the JS runtime. Less often it's a cookie issue (`ytdl cookies use chrome`). The error message in the UI suggests both.
 
 ## Commands
 
@@ -128,7 +136,7 @@ Requirements:
 - Python 3.12+ via [uv](https://docs.astral.sh/uv/) (manages venv + lockfile)
 - Node 22+ via [pnpm](https://pnpm.io/) (for the web UI)
 - `ffmpeg` on PATH (yt-dlp uses it to merge separate audio/video streams)
-- `deno` on PATH (optional; some YouTube extractors need it — see above)
+- `deno` on PATH (recommended — yt-dlp uses it to solve YouTube's n-challenge when it appears; see above)
 
 Setup:
 

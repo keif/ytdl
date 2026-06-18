@@ -211,7 +211,7 @@ class Supervisor:
                 # all the children as canceled-on-arrival instead of
                 # enqueueing them as PENDING.
                 current = get_job(conn, job.id)
-                parent_canceled = (
+                parent_canceled_pre = (
                     current is not None and current.status != JobStatus.RUNNING
                 )
 
@@ -220,7 +220,7 @@ class Supervisor:
                 promote_to_playlist(conn, job.id, title=playlist_title)
                 playlist_subdir = Path(job.output_dir) / safe_title
 
-                enqueued_children = 0
+                enqueued_child_ids: list[str] = []
                 for entry in info.get("entries") or []:
                     child_url = entry.get("webpage_url") or entry.get("url") or ""
                     if not child_url:
@@ -233,7 +233,8 @@ class Supervisor:
                         output_dir=str(playlist_subdir),
                         parent_job_id=job.id,
                     )
-                    if parent_canceled:
+                    enqueued_child_ids.append(child_id)
+                    if parent_canceled_pre:
                         conn.execute(
                             "UPDATE jobs SET status=?, finished_at=? WHERE id=?",
                             (
@@ -248,13 +249,28 @@ class Supervisor:
                             "canceled",
                             {"reason": "parent canceled before expansion"},
                         )
-                    enqueued_children += 1
 
-                if parent_canceled:
-                    # Parent was already canceled mid-probe. All children we
-                    # just enqueued are pre-marked CANCELED, so no worker
-                    # will ever fire the reaper for this parent. Finalize
-                    # the parent here (CAS from CANCELING -> CANCELED).
+                enqueued_children = len(enqueued_child_ids)
+
+                # Empty playlist: all_children_terminal would never fire the
+                # reaper. Finish the parent now so the queue drains.
+                if enqueued_children == 0:
+                    finish(
+                        conn,
+                        job.id,
+                        status=JobStatus.DONE,
+                        output_path=None,
+                        error="empty playlist",
+                    )
+                    self._bus.publish(
+                        {"event": "finished", "job_id": job.id, "done": 0, "failed": 0}
+                    )
+                    return
+
+                # Pre-loop snapshot saw the cancel: parent already known
+                # canceled, children already CANCELED inside the loop above.
+                # Finalize the parent here (CAS from CANCELING -> CANCELED).
+                if parent_canceled_pre:
                     if finish_if_status(
                         conn,
                         job.id,
@@ -271,29 +287,64 @@ class Supervisor:
                                 "failed": enqueued_children,
                             }
                         )
-                elif enqueued_children == 0:
-                    # No children means all_children_terminal would never fire
-                    # the reaper. Finish the parent now so the queue drains.
-                    finish(
+                    return
+
+                # Cancel-during-loop race: re-read the parent. If the user
+                # canceled while we were iterating, late iterations kept
+                # inserting children as PENDING because the pre-loop snapshot
+                # was stale. Snap any still-PENDING just-enqueued child to
+                # CANCELED via CAS and finalize the parent as CANCELED. The
+                # PENDING filter leaves alone any child that the loop already
+                # marked CANCELED, and tolerates any concurrent transition.
+                current = get_job(conn, job.id)
+                if current is not None and current.status == JobStatus.CANCELING:
+                    for child_id in enqueued_child_ids:
+                        cur = conn.execute(
+                            """
+                            UPDATE jobs SET status=?, finished_at=?
+                            WHERE id=? AND status=?
+                            """,
+                            (
+                                JobStatus.CANCELED.value,
+                                int(time.time() * 1000),
+                                child_id,
+                                JobStatus.PENDING.value,
+                            ),
+                        )
+                        if cur.rowcount > 0:
+                            record_event(
+                                conn,
+                                child_id,
+                                "canceled",
+                                {"reason": "parent canceled mid-expansion"},
+                            )
+                    if finish_if_status(
                         conn,
                         job.id,
-                        status=JobStatus.DONE,
+                        expected_status=JobStatus.CANCELING,
+                        new_status=JobStatus.CANCELED,
                         output_path=None,
-                        error="empty playlist",
-                    )
-                    self._bus.publish(
-                        {"event": "finished", "job_id": job.id, "done": 0, "failed": 0}
-                    )
-                else:
-                    # Parent stays RUNNING until all children reach a terminal
-                    # state; the last child to finish flips the parent (see below).
-                    self._bus.publish(
-                        {
-                            "event": "expanded",
-                            "job_id": job.id,
-                            "child_count": enqueued_children,
-                        }
-                    )
+                        error="canceled",
+                    ):
+                        self._bus.publish(
+                            {
+                                "event": "canceled",
+                                "job_id": job.id,
+                                "done": 0,
+                                "failed": enqueued_children,
+                            }
+                        )
+                    return
+
+                # Normal path: parent stays RUNNING until all children reach a
+                # terminal state; the last child to finish flips the parent.
+                self._bus.publish(
+                    {
+                        "event": "expanded",
+                        "job_id": job.id,
+                        "child_count": enqueued_children,
+                    }
+                )
                 return
 
         # Regular video download (top-level video OR playlist child).

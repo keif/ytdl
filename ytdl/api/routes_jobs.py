@@ -5,7 +5,13 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from ytdl.api.schemas import JobCreate, JobList, JobOut
 from ytdl.db import connect, migrate
 from ytdl.models import Job, JobKind, JobStatus
-from ytdl.queue import cancel, enqueue, get_job, list_jobs
+from ytdl.queue import (
+    cancel_with_children,
+    children_of,
+    enqueue,
+    get_job,
+    list_jobs,
+)
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -108,10 +114,17 @@ def delete_endpoint(job_id: str, request: Request) -> Response:
         job = get_job(conn, job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="job not found")
-        cancel(conn, job_id)
+        # Cascade-cancel: also flips any children of a playlist parent.
+        cancel_with_children(conn, job_id)
         sup = getattr(request.app.state, "supervisor", None)
         if sup is not None:
             sup.request_cancel(job_id)
+            # Also nudge supervisor for any currently-running children so
+            # their progress-hook closures see the in-memory flag quickly
+            # instead of waiting for the per-tick DB status check.
+            for child in children_of(conn, job_id):
+                if child.status in (JobStatus.RUNNING, JobStatus.CANCELING):
+                    sup.request_cancel(child.id)
         return Response(status_code=204)
     finally:
         conn.close()

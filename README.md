@@ -119,7 +119,7 @@ The whole thing runs in one Python process. Modules:
 | `ytdl/api/` | FastAPI app factory + `/jobs`, `/events`, `/library` routers + static UI mount. |
 | `web/` | Vite + React + TypeScript + Tailwind. Built bundle is copied into `ytdl/web/` for the API to serve. |
 
-The queue uses an atomic `UPDATE … RETURNING` compare-and-swap so multiple workers can race for the oldest pending job without locks. Playlist expansion runs inside `BEGIN IMMEDIATE` so siblings become claimable as a set. SSE clients get a `snapshot` event on connect, then live events, and can resume via `Last-Event-ID` after a disconnect.
+The queue uses an atomic `UPDATE … RETURNING` compare-and-swap so multiple workers can race for the oldest pending job without locks. Playlist expansion runs inside `BEGIN IMMEDIATE` so siblings become claimable as a set. SSE clients get a `snapshot` event on connect followed by live lifecycle and progress events; full `Last-Event-ID` resume isn't wired up yet (see [#3](https://github.com/keif/ytdl/issues/3)).
 
 ## Development
 

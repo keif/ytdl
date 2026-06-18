@@ -44,6 +44,72 @@ _AUTODETECT_ORDER = (
 )
 
 
+def _candidate_paths(browser: str) -> list[Path]:
+    """Return one or more candidate cookie-store paths for ``browser`` on the
+    current platform. Multiple paths cover layout changes across versions
+    (e.g., Chromium's ``Default/Network/Cookies`` since Chrome 96 vs the
+    legacy ``Default/Cookies``).
+    """
+    home = Path.home()
+    name = browser.lower()
+
+    if sys.platform == "darwin":
+        chromium_family = {
+            "chrome": "Library/Application Support/Google/Chrome",
+            "brave": "Library/Application Support/BraveSoftware/Brave-Browser",
+            "chromium": "Library/Application Support/Chromium",
+            "edge": "Library/Application Support/Microsoft Edge",
+            "vivaldi": "Library/Application Support/Vivaldi",
+        }
+        if name in chromium_family:
+            base = home / chromium_family[name] / "Default"
+            return [base / "Network/Cookies", base / "Cookies"]
+        roots: dict[str, list[Path]] = {
+            "opera": [home / "Library/Application Support/com.operasoftware.Opera/Cookies"],
+            "safari": [home / "Library/Cookies/Cookies.binarycookies"],
+            "firefox": [home / "Library/Application Support/Firefox/Profiles"],
+        }
+        return roots.get(name, [])
+
+    if sys.platform.startswith("linux"):
+        chromium_family = {
+            "chrome": ".config/google-chrome",
+            "brave": ".config/BraveSoftware/Brave-Browser",
+            "chromium": ".config/chromium",
+            "edge": ".config/microsoft-edge",
+            "vivaldi": ".config/vivaldi",
+        }
+        if name in chromium_family:
+            base = home / chromium_family[name] / "Default"
+            return [base / "Network/Cookies", base / "Cookies"]
+        roots = {
+            "opera": [home / ".config/opera/Cookies"],
+            "firefox": [home / ".mozilla/firefox"],
+        }
+        return roots.get(name, [])
+
+    if sys.platform == "win32":
+        local = Path(os.environ.get("LOCALAPPDATA", str(home / "AppData/Local")))
+        appdata = Path(os.environ.get("APPDATA", str(home / "AppData/Roaming")))
+        chromium_family = {
+            "chrome": local / "Google/Chrome/User Data/Default",
+            "brave": local / "BraveSoftware/Brave-Browser/User Data/Default",
+            "chromium": local / "Chromium/User Data/Default",
+            "edge": local / "Microsoft/Edge/User Data/Default",
+            "vivaldi": local / "Vivaldi/User Data/Default",
+        }
+        if name in chromium_family:
+            base = chromium_family[name]
+            return [base / "Network/Cookies", base / "Cookies"]
+        roots = {
+            "opera": [appdata / "Opera Software/Opera Stable/Network/Cookies"],
+            "firefox": [appdata / "Mozilla/Firefox/Profiles"],
+        }
+        return roots.get(name, [])
+
+    return []
+
+
 def cookie_path_for(browser: str) -> Path | None:
     """Return the canonical cookie-store path for ``browser`` on the current
     platform, or ``None`` if we don't know the path for that combination.
@@ -53,47 +119,8 @@ def cookie_path_for(browser: str) -> Path | None:
     is usable; this lookup just answers the "is the browser installed?"
     question cheaply.
     """
-    home = Path.home()
-    if sys.platform == "darwin":
-        roots: dict[str, Path] = {
-            "chrome": home / "Library/Application Support/Google/Chrome/Default/Cookies",
-            "brave": home
-            / "Library/Application Support/BraveSoftware/Brave-Browser/Default/Cookies",
-            "chromium": home / "Library/Application Support/Chromium/Default/Cookies",
-            "edge": home / "Library/Application Support/Microsoft Edge/Default/Cookies",
-            "opera": home / "Library/Application Support/com.operasoftware.Opera/Cookies",
-            "vivaldi": home / "Library/Application Support/Vivaldi/Default/Cookies",
-            "safari": home / "Library/Cookies/Cookies.binarycookies",
-            # Firefox cookies live inside profile dirs under Profiles/. We just
-            # check that the profiles dir exists; yt-dlp picks the default.
-            "firefox": home / "Library/Application Support/Firefox/Profiles",
-        }
-    elif sys.platform.startswith("linux"):
-        roots = {
-            "chrome": home / ".config/google-chrome/Default/Cookies",
-            "brave": home / ".config/BraveSoftware/Brave-Browser/Default/Cookies",
-            "chromium": home / ".config/chromium/Default/Cookies",
-            "edge": home / ".config/microsoft-edge/Default/Cookies",
-            "opera": home / ".config/opera/Cookies",
-            "vivaldi": home / ".config/vivaldi/Default/Cookies",
-            "firefox": home / ".mozilla/firefox",
-        }
-    elif sys.platform == "win32":
-        local = Path(os.environ.get("LOCALAPPDATA", str(home / "AppData/Local")))
-        appdata = Path(os.environ.get("APPDATA", str(home / "AppData/Roaming")))
-        roots = {
-            "chrome": local / "Google/Chrome/User Data/Default/Network/Cookies",
-            "brave": local
-            / "BraveSoftware/Brave-Browser/User Data/Default/Network/Cookies",
-            "chromium": local / "Chromium/User Data/Default/Network/Cookies",
-            "edge": local / "Microsoft/Edge/User Data/Default/Network/Cookies",
-            "opera": appdata / "Opera Software/Opera Stable/Network/Cookies",
-            "vivaldi": local / "Vivaldi/User Data/Default/Network/Cookies",
-            "firefox": appdata / "Mozilla/Firefox/Profiles",
-        }
-    else:
-        return None
-    return roots.get(browser.lower())
+    paths = _candidate_paths(browser)
+    return paths[0] if paths else None
 
 
 def autodetect_browser() -> str | None:
@@ -101,13 +128,16 @@ def autodetect_browser() -> str | None:
     on this platform. Returns the browser name (lowercase) or ``None`` when
     nothing was found.
 
+    Checks every candidate path per browser to handle layout changes (e.g.,
+    Chromium's ``Default/Network/Cookies`` since v96 vs legacy ``Default/Cookies``).
+
     Detection is intentionally shallow — "does the standard cookie file/dir
     exist for this browser." yt-dlp performs the real cookie read at job time
     and the existing FORBIDDEN hint surfaces if the auto-pick turns out not
     to work.
     """
     for name in _AUTODETECT_ORDER:
-        path = cookie_path_for(name)
-        if path is not None and path.exists():
-            return name
+        for path in _candidate_paths(name):
+            if path.exists():
+                return name
     return None

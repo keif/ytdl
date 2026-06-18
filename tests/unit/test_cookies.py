@@ -48,10 +48,10 @@ def test_autodetect_picks_chrome_first_when_multiple_exist(
 
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     if _sys.platform == "darwin":
-        chrome = tmp_path / "Library/Application Support/Google/Chrome/Default/Cookies"
+        chrome = tmp_path / "Library/Application Support/Google/Chrome/Default/Network/Cookies"
         firefox = tmp_path / "Library/Application Support/Firefox/Profiles"
     elif _sys.platform.startswith("linux"):
-        chrome = tmp_path / ".config/google-chrome/Default/Cookies"
+        chrome = tmp_path / ".config/google-chrome/Default/Network/Cookies"
         firefox = tmp_path / ".mozilla/firefox"
     else:
         pytest.skip("unsupported platform for this test")
@@ -77,3 +77,45 @@ def test_autodetect_falls_through_to_firefox(
         pytest.skip("unsupported platform for this test")
     firefox.mkdir(parents=True, exist_ok=True)
     assert ck.autodetect_browser() == "firefox"
+
+
+def test_autodetect_picks_chrome_at_new_network_cookies_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Chrome moved cookies to Default/Network/Cookies around v96 (2021).
+    Make sure we detect that layout, not just the legacy one."""
+    import sys as _sys
+
+    from ytdl import cookies as ck
+
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    if _sys.platform == "darwin":
+        chrome_new = tmp_path / "Library/Application Support/Google/Chrome/Default/Network/Cookies"
+    elif _sys.platform.startswith("linux"):
+        chrome_new = tmp_path / ".config/google-chrome/Default/Network/Cookies"
+    else:
+        pytest.skip("unsupported platform for this test")
+    chrome_new.parent.mkdir(parents=True, exist_ok=True)
+    chrome_new.touch()
+    assert ck.autodetect_browser() == "chrome"
+
+
+def test_autodetect_picks_chrome_at_legacy_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Pre-v96 Chrome installs still use Default/Cookies. Stay
+    backward-compatible."""
+    import sys as _sys
+
+    from ytdl import cookies as ck
+
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    if _sys.platform == "darwin":
+        chrome_legacy = tmp_path / "Library/Application Support/Google/Chrome/Default/Cookies"
+    elif _sys.platform.startswith("linux"):
+        chrome_legacy = tmp_path / ".config/google-chrome/Default/Cookies"
+    else:
+        pytest.skip("unsupported platform for this test")
+    chrome_legacy.parent.mkdir(parents=True, exist_ok=True)
+    chrome_legacy.touch()
+    assert ck.autodetect_browser() == "chrome"

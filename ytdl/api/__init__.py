@@ -63,6 +63,10 @@ def build_app(config: Config) -> FastAPI:
 
     app.include_router(routes_library.router)
 
+    from ytdl.api import routes_preview
+
+    app.include_router(routes_preview.router)
+
     # Serve the built Vite bundle when present. The Dockerfile copies the
     # production build into ytdl/web/; in dev there's no bundle and Vite
     # proxies the API calls instead. Mount AFTER API routers so /jobs,

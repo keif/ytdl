@@ -156,6 +156,57 @@ def test_get_jobs_with_valid_status_filter_works(client: TestClient) -> None:
     assert len(r.json()["jobs"]) == 1
 
 
+def test_post_jobs_with_urls_array_enqueues_each(client: TestClient) -> None:
+    urls = ["https://a.com/1", "https://a.com/2", "https://a.com/3"]
+    r = client.post("/jobs", json={"urls": urls})
+    assert r.status_code == 201
+    # Response is the first job (matches the single-url shape).
+    first = r.json()
+    assert first["url"] == "https://a.com/1"
+    # All three are in the queue.
+    listed = client.get("/jobs").json()["jobs"]
+    in_queue = [j["url"] for j in listed if j["url"].startswith("https://a.com/")]
+    assert set(in_queue) == set(urls)
+
+
+def test_post_jobs_rejects_both_url_and_urls(client: TestClient) -> None:
+    r = client.post(
+        "/jobs",
+        json={"url": "https://a.com/1", "urls": ["https://a.com/2"]},
+    )
+    assert r.status_code == 422
+
+
+def test_post_jobs_rejects_neither_url_nor_urls(client: TestClient) -> None:
+    r = client.post("/jobs", json={"format_pref": "best"})
+    assert r.status_code == 422
+
+
+def test_post_jobs_rejects_non_http_url_in_array(client: TestClient) -> None:
+    r = client.post(
+        "/jobs",
+        json={"urls": ["https://a.com/1", "javascript:alert(1)"]},
+    )
+    assert r.status_code == 422
+
+
+def test_post_jobs_urls_array_uses_default_format(client: TestClient) -> None:
+    r = client.post("/jobs", json={"urls": ["https://a.com/1"]})
+    assert r.status_code == 201
+    assert r.json()["format_pref"] == "best"
+
+
+def test_post_jobs_urls_array_honors_format_pref(client: TestClient) -> None:
+    r = client.post(
+        "/jobs",
+        json={"urls": ["https://a.com/1", "https://a.com/2"], "format_pref": "720p"},
+    )
+    assert r.status_code == 201
+    listed = client.get("/jobs").json()["jobs"]
+    formats = {j["format_pref"] for j in listed if j["url"].startswith("https://a.com/")}
+    assert formats == {"720p"}
+
+
 def test_static_ui_served_when_present(tmp_path: Path) -> None:
     # Stage a fake built UI in the package's `web/` dir.
     import ytdl.api as api_pkg

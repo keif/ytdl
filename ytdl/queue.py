@@ -355,6 +355,40 @@ def cancel_with_children(conn: sqlite3.Connection, job_id: str) -> bool:
         if running_kids:
             changed = True
 
+        # If the cascade left no non-terminal children behind, the reaper
+        # will never fire (it runs only when a child worker completes).
+        # Finalize the parent here so the queue drains.
+        any_alive = conn.execute(
+            """
+            SELECT 1 FROM jobs
+            WHERE parent_job_id = ?
+              AND status NOT IN (?, ?, ?)
+            LIMIT 1
+            """,
+            (
+                job_id,
+                JobStatus.DONE.value,
+                JobStatus.FAILED.value,
+                JobStatus.CANCELED.value,
+            ),
+        ).fetchone()
+        if any_alive is None:
+            cur = conn.execute(
+                """
+                UPDATE jobs SET status = ?, finished_at = ?
+                WHERE id = ? AND status = ?
+                """,
+                (
+                    JobStatus.CANCELED.value,
+                    _now_ms(),
+                    job_id,
+                    JobStatus.CANCELING.value,
+                ),
+            )
+            if cur.rowcount > 0:
+                record_event(conn, job_id, "canceled", {})
+                changed = True
+
         conn.execute("COMMIT")
         return changed
     except BaseException:

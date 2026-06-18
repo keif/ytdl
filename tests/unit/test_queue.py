@@ -297,13 +297,13 @@ def test_finish_if_status_cas_misses_when_status_differs(tmp_path: Path) -> None
     conn = _setup(tmp_path)
     job_id = enqueue(conn, url="u", kind=JobKind.VIDEO, format_pref="best", output_dir="/o")
     conn.execute("UPDATE jobs SET status='canceling' WHERE id=?", (job_id,))
-    ok = finish_if_status(
+    result = finish_if_status(
         conn,
         job_id,
         expected_status=JobStatus.RUNNING,
         new_status=JobStatus.DONE,
     )
-    assert ok is False
+    assert result is None
     row = conn.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
     assert row["status"] == JobStatus.CANCELING.value
 
@@ -312,14 +312,14 @@ def test_finish_if_status_cas_hits_when_status_matches(tmp_path: Path) -> None:
     conn = _setup(tmp_path)
     job_id = enqueue(conn, url="u", kind=JobKind.VIDEO, format_pref="best", output_dir="/o")
     conn.execute("UPDATE jobs SET status='running' WHERE id=?", (job_id,))
-    ok = finish_if_status(
+    result = finish_if_status(
         conn,
         job_id,
         expected_status=JobStatus.RUNNING,
         new_status=JobStatus.DONE,
         output_path="/out/x.mp4",
     )
-    assert ok is True
+    assert isinstance(result, int) and result > 0
     row = conn.execute(
         "SELECT status, output_path FROM jobs WHERE id=?", (job_id,)
     ).fetchone()
@@ -416,3 +416,56 @@ def test_record_event_serializes_payload(tmp_path: Path) -> None:
 def test_get_job_returns_none_for_unknown(tmp_path: Path) -> None:
     conn = _setup(tmp_path)
     assert get_job(conn, "no-such-id") is None
+
+
+def test_finish_returns_event_id(tmp_path: Path) -> None:
+    """finish() returns the new events row id so callers can publish it on
+    the bus as _event_id for SSE Last-Event-ID resume."""
+    conn = _setup(tmp_path)
+    job_id = enqueue(conn, url="u", kind=JobKind.VIDEO, format_pref="best", output_dir="/o")
+    conn.execute("UPDATE jobs SET status='running' WHERE id=?", (job_id,))
+    event_id = finish(conn, job_id, status=JobStatus.DONE, output_path="/out/x.mp4")
+    assert isinstance(event_id, int) and event_id > 0
+    row = conn.execute("SELECT * FROM events WHERE id=?", (event_id,)).fetchone()
+    assert row["kind"] == "finished"
+    assert row["job_id"] == job_id
+
+
+def test_finish_if_status_returns_id_on_hit_and_none_on_miss(tmp_path: Path) -> None:
+    """finish_if_status() returns int on a successful CAS, None when the CAS
+    misses (status was not the expected value)."""
+    conn = _setup(tmp_path)
+    job_id = enqueue(conn, url="u", kind=JobKind.VIDEO, format_pref="best", output_dir="/o")
+    conn.execute("UPDATE jobs SET status='running' WHERE id=?", (job_id,))
+    hit = finish_if_status(
+        conn,
+        job_id,
+        expected_status=JobStatus.RUNNING,
+        new_status=JobStatus.DONE,
+        output_path="/out/x.mp4",
+    )
+    assert isinstance(hit, int) and hit > 0
+
+    # Second call misses (status is now DONE, not RUNNING).
+    miss = finish_if_status(
+        conn,
+        job_id,
+        expected_status=JobStatus.RUNNING,
+        new_status=JobStatus.DONE,
+    )
+    assert miss is None
+
+
+def test_claim_one_does_not_record_started_event(tmp_path: Path) -> None:
+    """claim_one is now a pure claim primitive. The supervisor records the
+    'started' event so it can capture the event id and publish it on the bus
+    as _event_id (needed for SSE id: lines on live frames)."""
+    conn = _setup(tmp_path)
+    job_id = enqueue(conn, url="u", kind=JobKind.VIDEO, format_pref="best", output_dir="/o")
+    claimed = claim_one(conn)
+    assert claimed is not None
+    started = conn.execute(
+        "SELECT COUNT(*) AS n FROM events WHERE job_id=? AND kind='started'",
+        (job_id,),
+    ).fetchone()
+    assert started["n"] == 0, "claim_one should not write the 'started' event"

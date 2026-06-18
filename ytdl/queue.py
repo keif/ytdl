@@ -238,6 +238,55 @@ def cancel(conn: sqlite3.Connection, job_id: str) -> bool:
     return cur.rowcount > 0
 
 
+def cancel_with_children(conn: sqlite3.Connection, job_id: str) -> bool:
+    """Cascade-cancel a job and all of its non-terminal children.
+
+    For each non-terminal child:
+      - PENDING -> CANCELED (terminal, emits 'canceled' event)
+      - RUNNING -> CANCELING (worker will observe and abort)
+    Already-terminal children are left alone.
+
+    Then handle the parent itself the same way as the simple `cancel`.
+
+    Returns True if anything changed (parent or any child), else False.
+    """
+    changed = False
+
+    # Pending children go straight to CANCELED (terminal). Use RETURNING so we
+    # can emit a 'canceled' event for each one; matches what cancel() does for
+    # a single pending row.
+    pending_kids = conn.execute(
+        """
+        UPDATE jobs SET status = ?, finished_at = ?
+        WHERE parent_job_id = ? AND status = ?
+        RETURNING id
+        """,
+        (JobStatus.CANCELED.value, _now_ms(), job_id, JobStatus.PENDING.value),
+    ).fetchall()
+    for row in pending_kids:
+        record_event(conn, row["id"], "canceled", {"reason": "parent canceled"})
+        changed = True
+
+    # Running children flip to CANCELING; the worker's progress hook /
+    # _cancellable_sleep will observe and call finish() with CANCELED.
+    running_kids = conn.execute(
+        """
+        UPDATE jobs SET status = ?
+        WHERE parent_job_id = ? AND status = ?
+        RETURNING id
+        """,
+        (JobStatus.CANCELING.value, job_id, JobStatus.RUNNING.value),
+    ).fetchall()
+    if running_kids:
+        changed = True
+
+    # Parent — same CAS logic as cancel().
+    if cancel(conn, job_id):
+        changed = True
+
+    return changed
+
+
 def revive_orphans(conn: sqlite3.Connection, *, max_attempts: int = 3) -> int:
     """Reset orphans after a crash.
 

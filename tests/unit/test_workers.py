@@ -242,3 +242,86 @@ async def test_supervisor_sets_bytes_done_to_filesize_on_success(tmp_path: Path)
     assert job.status == JobStatus.DONE
     assert job.bytes_done == 500_000, f"expected bytes_done=500000 on success, got {job.bytes_done}"
     assert job.filesize_bytes == 500_000
+
+
+@pytest.mark.asyncio
+async def test_supervisor_publishes_finished_with_event_id_pointing_at_db_row(
+    tmp_path: Path,
+) -> None:
+    """Persisted lifecycle events on the bus must carry _event_id so the SSE
+    route can emit it as 'id:' for Last-Event-ID resume. The published id
+    must point at a real row in the events table."""
+    from ytdl.downloader import DownloadResult
+
+    conn = connect(tmp_path / "t.db")
+    migrate(conn)
+    job_id = enqueue(
+        conn,
+        url="u",
+        kind=JobKind.VIDEO,
+        format_pref="best",
+        output_dir=str(tmp_path),
+    )
+    conn.close()
+
+    def fake_download(job, ctx) -> DownloadResult:
+        return DownloadResult(
+            output_path=f"{job.output_dir}/{job.id}.mp4",
+            title="t",
+            video_id="v",
+            uploader=None,
+            duration_s=None,
+            filesize_bytes=None,
+        )
+
+    bus = EventsBus()
+    seen: list[dict] = []
+
+    async def collect() -> None:
+        async with bus.subscribe() as q:
+            while True:
+                msg = await asyncio.wait_for(q.get(), timeout=3.0)
+                seen.append(msg)
+                if msg.get("event") in ("finished", "failed", "canceled"):
+                    return
+
+    sup = Supervisor(
+        db_path=tmp_path / "t.db",
+        workers=1,
+        bus=bus,
+        downloader=fake_download,
+        probe=lambda url: {"_type": "video"},
+        cookies_browser=None,
+        retry_delays_s=(0, 0),
+        rate_limit_delay_s=0,
+    )
+    collect_task = asyncio.create_task(collect())
+    # Let the subscriber attach before workers start publishing.
+    await asyncio.sleep(0.05)
+    await sup.start()
+    await asyncio.wait_for(collect_task, timeout=3.0)
+    await sup.wait_idle(timeout=2.0)
+    await sup.stop()
+
+    finished = next(m for m in seen if m.get("event") == "finished")
+    assert finished["job_id"] == job_id
+    assert "_event_id" in finished, (
+        f"finished message must include _event_id, got {finished}"
+    )
+    event_id = finished["_event_id"]
+    assert isinstance(event_id, int) and event_id > 0
+
+    # The published _event_id must point at a real row in the events table.
+    conn = connect(tmp_path / "t.db")
+    row = conn.execute(
+        "SELECT kind, job_id FROM events WHERE id=?", (event_id,)
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    assert row["kind"] == "finished"
+    assert row["job_id"] == job_id
+
+    # And 'started' should also carry an _event_id, distinct from finished's.
+    started = next(m for m in seen if m.get("event") == "started")
+    assert "_event_id" in started
+    assert started["_event_id"] != event_id

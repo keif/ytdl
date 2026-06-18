@@ -6,6 +6,7 @@ import {
   enrichUrls,
   listJobs,
   previewUrl,
+  retryJob,
   type EnrichedEntry,
   type Job,
   type PreviewResponse,
@@ -256,6 +257,10 @@ export default function App() {
         jobs={jobs}
         onCancel={async (id) => {
           await cancelJob(id);
+          await refresh();
+        }}
+        onRetry={async (id) => {
+          await retryJob(id);
           await refresh();
         }}
       />

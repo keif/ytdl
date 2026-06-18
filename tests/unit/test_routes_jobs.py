@@ -207,6 +207,37 @@ def test_post_jobs_urls_array_honors_format_pref(client: TestClient) -> None:
     assert formats == {"720p"}
 
 
+def test_retry_endpoint_creates_new_job(client: TestClient) -> None:
+    job_id = client.post("/jobs", json={"url": "https://yt/x"}).json()["id"]
+    # Mark failed via DB.
+    from ytdl.db import connect
+
+    db = client.app.state.config.db_path
+    conn = connect(db)
+    conn.execute(
+        "UPDATE jobs SET status='failed', error='boom' WHERE id=?", (job_id,)
+    )
+    conn.commit()
+    conn.close()
+    r = client.post(f"/jobs/{job_id}/retry")
+    assert r.status_code == 201
+    new = r.json()
+    assert new["id"] != job_id
+    assert new["status"] == "pending"
+    assert new["url"] == "https://yt/x"
+
+
+def test_retry_endpoint_rejects_pending_job(client: TestClient) -> None:
+    job_id = client.post("/jobs", json={"url": "https://yt/x"}).json()["id"]
+    r = client.post(f"/jobs/{job_id}/retry")
+    assert r.status_code == 400
+
+
+def test_retry_endpoint_returns_400_for_unknown_id(client: TestClient) -> None:
+    r = client.post("/jobs/01nonexistent/retry")
+    assert r.status_code == 400
+
+
 def test_static_ui_served_when_present(tmp_path: Path) -> None:
     # Stage a fake built UI in the package's `web/` dir.
     import ytdl.api as api_pkg

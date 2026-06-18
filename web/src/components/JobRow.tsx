@@ -3,12 +3,15 @@ import type { Job } from "../api";
 interface Props {
   job: Job;
   onCancel: (id: string) => void;
+  onRetry: (id: string) => void;
 }
 
-export function JobRow({ job, onCancel }: Props) {
+export function JobRow({ job, onCancel, onRetry }: Props) {
   const total = job.filesize_bytes ?? 0;
   const done = job.bytes_done ?? 0;
   const pct = total ? Math.min(100, Math.floor((done * 100) / total)) : 0;
+  const cancellable = job.status === "pending" || job.status === "running";
+  const retryable = job.status === "failed" || job.status === "canceled" || job.status === "done";
   return (
     <li className="flex flex-col gap-1 p-3 border-b border-neutral-800">
       <div className="flex items-center justify-between">
@@ -29,13 +32,25 @@ export function JobRow({ job, onCancel }: Props) {
       {job.error && (
         <p className="text-xs text-red-400">{job.error}</p>
       )}
-      {(job.status === "pending" || job.status === "running") && (
-        <button
-          className="self-end text-xs text-neutral-400 hover:text-neutral-200"
-          onClick={() => onCancel(job.id)}
-        >
-          cancel
-        </button>
+      {(cancellable || retryable) && (
+        <div className="self-end flex items-center gap-3">
+          {retryable && (
+            <button
+              className="text-xs text-neutral-400 hover:text-neutral-200"
+              onClick={() => onRetry(job.id)}
+            >
+              retry
+            </button>
+          )}
+          {cancellable && (
+            <button
+              className="text-xs text-neutral-400 hover:text-neutral-200"
+              onClick={() => onCancel(job.id)}
+            >
+              cancel
+            </button>
+          )}
+        </div>
       )}
     </li>
   );

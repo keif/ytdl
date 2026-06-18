@@ -75,6 +75,15 @@ export async function cancelJob(id: string): Promise<void> {
   if (!r.ok) throw new Error(`cancelJob: ${r.status}`);
 }
 
+export async function retryJob(id: string): Promise<Job> {
+  const r = await fetch(`/jobs/${id}/retry`, { method: "POST" });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail ?? `retry: ${r.status}`);
+  }
+  return r.json();
+}
+
 export interface PreviewEntry {
   url: string;
   id: string | null;

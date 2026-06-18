@@ -48,6 +48,21 @@ log = logging.getLogger(__name__)
 
 Downloader = Callable[[Any, DownloadContext], DownloadResult]
 
+_FORBIDDEN_HINT = (
+    "YouTube may be blocking unauthenticated requests; try "
+    "`ytdl cookies use <browser>` and restart the server."
+)
+
+
+def _format_forbidden_error(exc: BaseException, *, stage: str | None = None) -> str:
+    """Compose a user-actionable error string for FORBIDDEN classifications.
+
+    stage='probe' surfaces in the row as [probe:forbidden] ...; otherwise
+    plain [forbidden] ...
+    """
+    tag = "probe:forbidden" if stage == "probe" else "forbidden"
+    return f"[{tag}] {exc}. {_FORBIDDEN_HINT}"
+
 
 def _sanitize_path_component(name: str) -> str:
     """Make a yt-dlp-supplied title safe to use as a single directory component.
@@ -201,11 +216,15 @@ class Supervisor:
                 info = await asyncio.to_thread(self._probe, job.url)
             except BaseException as exc:
                 cls = classify_error(exc)
+                if cls == Classification.FORBIDDEN:
+                    error_msg = _format_forbidden_error(exc, stage="probe")
+                else:
+                    error_msg = f"[probe:{cls.value}] {exc}"
                 fail_id = finish(
                     conn,
                     job.id,
                     status=JobStatus.FAILED,
-                    error=f"[probe:{cls.value}] {exc}",
+                    error=error_msg,
                 )
                 self._bus.publish(
                     {
@@ -601,8 +620,15 @@ class Supervisor:
                         )
                         return
                     continue
+                if cls == Classification.FORBIDDEN:
+                    # Anti-bot / cookie-required. The user's actual fix is to
+                    # wire up browser cookies, so surface that hint directly
+                    # on the job row's error field — the UI displays it.
+                    error_msg = _format_forbidden_error(exc)
+                else:
+                    error_msg = f"[{cls.value}] {exc}"
                 failed_id = finish(
-                    conn, job.id, status=JobStatus.FAILED, error=f"[{cls.value}] {exc}"
+                    conn, job.id, status=JobStatus.FAILED, error=error_msg
                 )
                 self._bus.publish(
                     {

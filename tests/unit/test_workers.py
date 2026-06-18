@@ -325,3 +325,36 @@ async def test_supervisor_publishes_finished_with_event_id_pointing_at_db_row(
     started = next(m for m in seen if m.get("event") == "started")
     assert "_event_id" in started
     assert started["_event_id"] != event_id
+
+
+@pytest.mark.asyncio
+async def test_supervisor_probe_403_includes_cookie_hint(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "t.db")
+    migrate(conn)
+    job_id = enqueue(
+        conn, url="https://yt/x", kind=JobKind.VIDEO,
+        format_pref="best", output_dir=str(tmp_path),
+    )
+    conn.close()
+
+    def fake_probe(url: str) -> dict:
+        raise RuntimeError("HTTP Error 403: Forbidden")
+
+    bus = EventsBus()
+    sup = Supervisor(
+        db_path=tmp_path / "t.db", workers=1, bus=bus,
+        downloader=lambda job, ctx: (_ for _ in ()).throw(AssertionError("should not download")),
+        probe=fake_probe,
+        cookies_browser=None, retry_delays_s=(0, 0), rate_limit_delay_s=0,
+    )
+    await sup.start()
+    await sup.wait_idle(timeout=2.0)
+    await sup.stop()
+
+    conn = connect(tmp_path / "t.db")
+    job = get_job(conn, job_id)
+    conn.close()
+    assert job is not None
+    assert job.status == JobStatus.FAILED
+    assert job.error and "[probe:forbidden]" in job.error
+    assert job.error and "cookies use" in job.error.lower()

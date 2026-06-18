@@ -456,6 +456,71 @@ def test_finish_if_status_returns_id_on_hit_and_none_on_miss(tmp_path: Path) -> 
     assert miss is None
 
 
+def test_retry_job_creates_new_pending_job_from_failed(tmp_path: Path) -> None:
+    from ytdl.queue import retry_job
+
+    conn = _setup(tmp_path)
+    job_id = enqueue(
+        conn, url="https://yt/x", kind=JobKind.VIDEO,
+        format_pref="1080p", output_dir="/o",
+    )
+    conn.execute(
+        "UPDATE jobs SET status='failed', error='boom' WHERE id=?", (job_id,)
+    )
+
+    new_id = retry_job(conn, job_id)
+    assert new_id is not None
+    assert new_id != job_id
+    row = conn.execute(
+        "SELECT url, format_pref, output_dir, status FROM jobs WHERE id=?",
+        (new_id,),
+    ).fetchone()
+    assert row["url"] == "https://yt/x"
+    assert row["format_pref"] == "1080p"
+    assert row["output_dir"] == "/o"
+    assert row["status"] == JobStatus.PENDING.value
+    # Original row still in failed state — history preserved.
+    orig = conn.execute(
+        "SELECT status FROM jobs WHERE id=?", (job_id,)
+    ).fetchone()
+    assert orig["status"] == JobStatus.FAILED.value
+
+
+def test_retry_job_works_for_canceled_and_done(tmp_path: Path) -> None:
+    from ytdl.queue import retry_job
+
+    conn = _setup(tmp_path)
+    for status in ("canceled", "done"):
+        job_id = enqueue(
+            conn, url=f"https://yt/{status}", kind=JobKind.VIDEO,
+            format_pref="best", output_dir="/o",
+        )
+        conn.execute("UPDATE jobs SET status=? WHERE id=?", (status, job_id))
+        new_id = retry_job(conn, job_id)
+        assert new_id is not None, f"retry should succeed for {status}"
+
+
+def test_retry_job_rejects_running_or_pending(tmp_path: Path) -> None:
+    from ytdl.queue import retry_job
+
+    conn = _setup(tmp_path)
+    job_id = enqueue(
+        conn, url="https://yt/x", kind=JobKind.VIDEO,
+        format_pref="best", output_dir="/o",
+    )
+    # Pending — not retryable, would create a dup.
+    assert retry_job(conn, job_id) is None
+    conn.execute("UPDATE jobs SET status='running' WHERE id=?", (job_id,))
+    assert retry_job(conn, job_id) is None
+
+
+def test_retry_job_returns_none_for_missing_id(tmp_path: Path) -> None:
+    from ytdl.queue import retry_job
+
+    conn = _setup(tmp_path)
+    assert retry_job(conn, "01nonexistent") is None
+
+
 def test_claim_one_does_not_record_started_event(tmp_path: Path) -> None:
     """claim_one is now a pure claim primitive. The supervisor records the
     'started' event so it can capture the event id and publish it on the bus

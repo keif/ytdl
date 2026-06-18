@@ -26,9 +26,10 @@ class LibraryList(BaseModel):
 @router.get("/library", response_model=LibraryList)
 def library(request: Request, subdir: str = "") -> LibraryList:
     root: Path = request.app.state.config.output_dir
+    root_resolved = root.resolve()
     target = (root / subdir).resolve()
     try:
-        target.relative_to(root.resolve())
+        target.relative_to(root_resolved)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="path traversal not allowed") from exc
     if not target.exists():
@@ -39,7 +40,7 @@ def library(request: Request, subdir: str = "") -> LibraryList:
         if not p.is_file():
             continue
         try:
-            rel = p.relative_to(root)
+            rel = p.relative_to(root_resolved)
         except ValueError:
             continue
         stat = p.stat()

@@ -22,14 +22,16 @@ def test_download_short_cc_clip(tmp_path: Path) -> None:
     if shutil.which("ffprobe") is None:
         pytest.skip("ffprobe not on PATH")
 
+    from yt_dlp import YoutubeDL
+
     from ytdl.downloader import DownloadContext, download
     from ytdl.models import Job, JobKind, JobStatus
     from ytdl.ulid import new_ulid
-    from yt_dlp import YoutubeDL
 
+    # The very first YouTube video; CC by author.
     job = Job(
         id=new_ulid(),
-        url="https://www.youtube.com/watch?v=jNQXAC9IVRw",  # the very first YouTube video; CC by author
+        url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
         kind=JobKind.VIDEO,
         parent_job_id=None,
         status=JobStatus.RUNNING,

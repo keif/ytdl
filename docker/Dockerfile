@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-FROM node:22-alpine AS web-build
+FROM node:26-alpine AS web-build
 WORKDIR /web
 COPY web/package.json web/pnpm-lock.yaml* ./
 RUN corepack enable && corepack prepare pnpm@10.15.0 --activate \

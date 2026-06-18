@@ -81,6 +81,52 @@ def test_delete_job_cancels(client: TestClient) -> None:
     assert after["status"] == "canceled"
 
 
+def test_delete_playlist_cascades_to_children(client: TestClient) -> None:
+    """DELETE on a playlist parent flips its children's statuses too."""
+    from ytdl.db import connect
+    from ytdl.models import JobKind
+    from ytdl.queue import enqueue, promote_to_playlist
+
+    parent_resp = client.post(
+        "/jobs", json={"url": "https://yt.com/playlist?list=PL"}
+    ).json()
+    parent_id = parent_resp["id"]
+
+    # Promote to playlist + add children directly via the queue (no worker).
+    db_path = client.app.state.config.db_path
+    conn = connect(db_path)
+    promote_to_playlist(conn, parent_id, title="My Playlist")
+    child1 = enqueue(
+        conn,
+        url="https://yt.com/c1",
+        kind=JobKind.VIDEO,
+        format_pref="best",
+        output_dir="/o",
+        parent_job_id=parent_id,
+    )
+    child2 = enqueue(
+        conn,
+        url="https://yt.com/c2",
+        kind=JobKind.VIDEO,
+        format_pref="best",
+        output_dir="/o",
+        parent_job_id=parent_id,
+    )
+    # Mark one child as running so we exercise both branches.
+    conn.execute("UPDATE jobs SET status='running' WHERE id=?", (child1,))
+    conn.close()
+
+    r = client.delete(f"/jobs/{parent_id}")
+    assert r.status_code == 204
+
+    # Was running -> canceling.
+    body = client.get(f"/jobs/{child1}").json()
+    assert body["status"] == "canceling"
+    # Was pending -> canceled directly.
+    body = client.get(f"/jobs/{child2}").json()
+    assert body["status"] == "canceled"
+
+
 def test_post_jobs_xss_in_url_stored_as_text(client: TestClient) -> None:
     # We don't render URLs as HTML server-side, but verify it doesn't crash insertion.
     payload_url = "https://example.com/<script>alert(1)</script>"

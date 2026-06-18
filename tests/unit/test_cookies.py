@@ -119,3 +119,24 @@ def test_autodetect_picks_chrome_at_legacy_path(
     chrome_legacy.parent.mkdir(parents=True, exist_ok=True)
     chrome_legacy.touch()
     assert ck.autodetect_browser() == "chrome"
+
+
+def test_autodetect_honors_xdg_config_home_on_linux(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Linux: when XDG_CONFIG_HOME is set, Chromium-family browsers live
+    under it, not under ~/.config. Autodetect must follow."""
+    import sys as _sys
+
+    from ytdl import cookies as ck
+
+    if not _sys.platform.startswith("linux"):
+        pytest.skip("linux-only test")
+
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
+    xdg = tmp_path / "custom_xdg"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+    chrome = xdg / "google-chrome" / "Default" / "Network" / "Cookies"
+    chrome.parent.mkdir(parents=True, exist_ok=True)
+    chrome.touch()
+    assert ck.autodetect_browser() == "chrome"

@@ -93,7 +93,8 @@ def enqueue(
 def claim_one(conn: sqlite3.Connection) -> Job | None:
     """Atomically pick the oldest pending job and mark it running.
 
-    Uses RETURNING to make the read+write atomic from SQLite 3.35+.
+    Skips PENDING jobs whose parent is no longer RUNNING (e.g., parent was
+    canceled before we got to its children).
     """
     started = _now_ms()
     row = conn.execute(
@@ -101,14 +102,21 @@ def claim_one(conn: sqlite3.Connection) -> Job | None:
         UPDATE jobs
         SET status = ?, started_at = ?, attempts = attempts + 1
         WHERE id = (
-            SELECT id FROM jobs
-            WHERE status = ?
-            ORDER BY created_at ASC
+            SELECT j.id FROM jobs j
+            LEFT JOIN jobs p ON p.id = j.parent_job_id
+            WHERE j.status = ?
+              AND (j.parent_job_id IS NULL OR p.status = ?)
+            ORDER BY j.created_at ASC
             LIMIT 1
         )
         RETURNING *
         """,
-        (JobStatus.RUNNING.value, started, JobStatus.PENDING.value),
+        (
+            JobStatus.RUNNING.value,
+            started,
+            JobStatus.PENDING.value,
+            JobStatus.RUNNING.value,
+        ),
     ).fetchone()
     if row is None:
         return None
@@ -216,6 +224,51 @@ def finish(
     )
 
 
+def finish_if_status(
+    conn: sqlite3.Connection,
+    job_id: str,
+    *,
+    expected_status: JobStatus,
+    new_status: JobStatus,
+    output_path: str | None = None,
+    error: str | None = None,
+) -> bool:
+    """Atomically finish a job only if it's currently in expected_status.
+
+    Used by the playlist reaper so a concurrent cancel can't be overwritten:
+    if the parent flipped from RUNNING to CANCELING between read and write,
+    the UPDATE matches zero rows and the reaper falls back to a CANCELED
+    finalization.
+    """
+    cur = conn.execute(
+        """
+        UPDATE jobs SET
+            status = ?,
+            output_path = COALESCE(?, output_path),
+            error = COALESCE(?, error),
+            finished_at = ?
+        WHERE id = ? AND status = ?
+        """,
+        (
+            new_status.value,
+            output_path,
+            error,
+            _now_ms(),
+            job_id,
+            expected_status.value,
+        ),
+    )
+    if cur.rowcount > 0:
+        kind = {
+            JobStatus.DONE: "finished",
+            JobStatus.FAILED: "failed",
+            JobStatus.CANCELED: "canceled",
+        }.get(new_status, "log")
+        record_event(conn, job_id, kind, {"output_path": output_path, "error": error})
+        return True
+    return False
+
+
 def cancel(conn: sqlite3.Connection, job_id: str) -> bool:
     """Cancel pending -> canceled directly; running -> canceling (worker observes flag)."""
     cur = conn.execute(
@@ -236,6 +289,117 @@ def cancel(conn: sqlite3.Connection, job_id: str) -> bool:
         (JobStatus.CANCELING.value, job_id, JobStatus.RUNNING.value),
     )
     return cur.rowcount > 0
+
+
+def cancel_with_children(conn: sqlite3.Connection, job_id: str) -> bool:
+    """Cascade-cancel a job and all of its non-terminal children atomically.
+
+    Order matters: flip the parent state first so any reaper that races in
+    sees the CANCELING/CANCELED intent before deciding the parent's
+    terminal status. Then transition children.
+
+    For each non-terminal child:
+      - PENDING -> CANCELED (terminal, emits 'canceled' event)
+      - RUNNING -> CANCELING (worker will observe and abort)
+    Already-terminal children are left alone.
+
+    Returns True if anything changed (parent or any child), else False.
+    """
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        changed = False
+
+        # Parent first — same logic as cancel() but inlined inside the txn.
+        parent_pending = conn.execute(
+            """
+            UPDATE jobs SET status = ?, finished_at = ?
+            WHERE id = ? AND status = ?
+            """,
+            (JobStatus.CANCELED.value, _now_ms(), job_id, JobStatus.PENDING.value),
+        ).rowcount
+        if parent_pending > 0:
+            record_event(conn, job_id, "canceled", {})
+            changed = True
+        else:
+            parent_running = conn.execute(
+                """
+                UPDATE jobs SET status = ?
+                WHERE id = ? AND status = ?
+                """,
+                (JobStatus.CANCELING.value, job_id, JobStatus.RUNNING.value),
+            ).rowcount
+            if parent_running > 0:
+                changed = True
+
+        # Children second.
+        pending_kids = conn.execute(
+            """
+            UPDATE jobs SET status = ?, finished_at = ?
+            WHERE parent_job_id = ? AND status = ?
+            RETURNING id
+            """,
+            (JobStatus.CANCELED.value, _now_ms(), job_id, JobStatus.PENDING.value),
+        ).fetchall()
+        for row in pending_kids:
+            record_event(conn, row["id"], "canceled", {"reason": "parent canceled"})
+            changed = True
+
+        running_kids = conn.execute(
+            """
+            UPDATE jobs SET status = ?
+            WHERE parent_job_id = ? AND status = ?
+            RETURNING id
+            """,
+            (JobStatus.CANCELING.value, job_id, JobStatus.RUNNING.value),
+        ).fetchall()
+        if running_kids:
+            changed = True
+
+        # If the cascade left no non-terminal children behind AND the
+        # parent is a playlist (so no worker will fire the reaper),
+        # finalize the parent here so the queue drains. For standalone
+        # videos, the active downloader thread handles the terminal
+        # transition once it observes CANCELING.
+        parent_kind_row = conn.execute(
+            "SELECT kind FROM jobs WHERE id = ?", (job_id,)
+        ).fetchone()
+        if parent_kind_row is not None and parent_kind_row["kind"] == JobKind.PLAYLIST.value:
+            any_alive = conn.execute(
+                """
+                SELECT 1 FROM jobs
+                WHERE parent_job_id = ?
+                  AND status NOT IN (?, ?, ?)
+                LIMIT 1
+                """,
+                (
+                    job_id,
+                    JobStatus.DONE.value,
+                    JobStatus.FAILED.value,
+                    JobStatus.CANCELED.value,
+                ),
+            ).fetchone()
+            if any_alive is None:
+                cur = conn.execute(
+                    """
+                    UPDATE jobs SET status = ?, finished_at = ?
+                    WHERE id = ? AND status = ?
+                    """,
+                    (
+                        JobStatus.CANCELED.value,
+                        _now_ms(),
+                        job_id,
+                        JobStatus.CANCELING.value,
+                    ),
+                )
+                if cur.rowcount > 0:
+                    record_event(conn, job_id, "canceled", {})
+                    changed = True
+
+        conn.execute("COMMIT")
+        return changed
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
 
 
 def revive_orphans(conn: sqlite3.Connection, *, max_attempts: int = 3) -> int:

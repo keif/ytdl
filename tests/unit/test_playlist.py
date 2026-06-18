@@ -548,6 +548,68 @@ async def test_expansion_is_atomic_no_sibling_stranding(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.asyncio
+async def test_cancel_during_probe_with_empty_playlist_marks_parent_canceled(
+    tmp_path: Path,
+) -> None:
+    """Cancel arrives mid-probe AND the probe returns zero entries. The
+    parent should land CANCELED, not be overwritten as an "empty playlist"
+    DONE."""
+    import asyncio
+
+    from ytdl.queue import cancel_with_children
+    from ytdl.workers import Supervisor
+
+    db = tmp_path / "t.db"
+    conn = connect(db)
+    migrate(conn)
+    parent_id = enqueue(
+        conn, url="https://yt/playlist?list=PL", kind=JobKind.VIDEO,
+        format_pref="best", output_dir=str(tmp_path),
+    )
+    conn.close()
+
+    probe_started = asyncio.Event()
+    probe_unblock = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def fake_probe(url: str) -> dict:
+        loop.call_soon_threadsafe(probe_started.set)
+        import time as _t
+        deadline = _t.monotonic() + 3.0
+        while not probe_unblock.is_set() and _t.monotonic() < deadline:
+            _t.sleep(0.02)
+        return {"_type": "playlist", "title": "P", "entries": []}
+
+    bus = EventsBus()
+    sup = Supervisor(
+        db_path=db, workers=1, bus=bus,
+        downloader=lambda job, ctx: (_ for _ in ()).throw(AssertionError("no download should run")),
+        probe=fake_probe,
+        cookies_browser=None, retry_delays_s=(0, 0), rate_limit_delay_s=0,
+    )
+    await sup.start()
+    await asyncio.wait_for(probe_started.wait(), timeout=3.0)
+    # Cancel while probe is blocked.
+    conn = connect(db)
+    cancel_with_children(conn, parent_id)
+    conn.close()
+    # Release the probe; it returns an empty entry list.
+    probe_unblock.set()
+    await sup.wait_idle(timeout=3.0)
+    await sup.stop()
+
+    conn = connect(db)
+    parent = get_job(conn, parent_id)
+    kids = children_of(conn, parent_id)
+    conn.close()
+    assert parent is not None
+    assert parent.status == JobStatus.CANCELED, (
+        f"parent should be CANCELED for empty-playlist + mid-probe cancel; got {parent.status}"
+    )
+    assert len(kids) == 0
+
+
 def test_default_probe_adapter_forwards_cookies(monkeypatch: pytest.MonkeyPatch) -> None:
     """The supervisor's default probe path must pass the configured browser to yt-dlp."""
     captured: dict = {}

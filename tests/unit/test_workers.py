@@ -202,3 +202,43 @@ async def test_supervisor_observes_cancel_during_retry_backoff(tmp_path: Path) -
     assert job is not None
     assert job.status == JobStatus.CANCELED
     assert attempt_count == 1, "worker should not have attempted a second download after cancel"
+
+
+@pytest.mark.asyncio
+async def test_supervisor_sets_bytes_done_to_filesize_on_success(tmp_path: Path) -> None:
+    from ytdl.downloader import DownloadResult
+
+    conn = connect(tmp_path / "t.db")
+    migrate(conn)
+    job_id = enqueue(
+        conn, url="u", kind=JobKind.VIDEO, format_pref="best", output_dir=str(tmp_path),
+    )
+
+    def fake_download(job, ctx) -> DownloadResult:
+        # Simulate a fast download where the only progress tick captures a
+        # tiny partial value before the file finishes.
+        ctx.on_progress({"status": "downloading", "downloaded_bytes": 1024, "total_bytes": 500_000})
+        return DownloadResult(
+            output_path=f"{job.output_dir}/{job.id}.mp4",
+            title="t", video_id="v", uploader=None, duration_s=None,
+            filesize_bytes=500_000,
+        )
+
+    bus = EventsBus()
+    sup = Supervisor(
+        db_path=tmp_path / "t.db", workers=1, bus=bus,
+        downloader=fake_download,
+        probe=lambda url: {"_type": "video"},
+        cookies_browser=None, retry_delays_s=(0, 0), rate_limit_delay_s=0,
+    )
+    await sup.start()
+    await sup.wait_idle(timeout=2.0)
+    await sup.stop()
+
+    conn = connect(tmp_path / "t.db")
+    job = get_job(conn, job_id)
+    conn.close()
+    assert job is not None
+    assert job.status == JobStatus.DONE
+    assert job.bytes_done == 500_000, f"expected bytes_done=500000 on success, got {job.bytes_done}"
+    assert job.filesize_bytes == 500_000

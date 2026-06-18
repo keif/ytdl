@@ -12,6 +12,7 @@ from ytdl.queue import (
     claim_one,
     enqueue,
     finish,
+    finish_if_status,
     get_job,
     list_jobs,
     promote_to_playlist,
@@ -221,6 +222,40 @@ def test_cancel_with_children_atomic_parent_first(tmp_path: Path) -> None:
     assert cancel_with_children(conn, parent) is True
     row = conn.execute("SELECT status FROM jobs WHERE id=?", (parent,)).fetchone()
     assert row["status"] == JobStatus.CANCELING.value
+
+
+def test_finish_if_status_cas_misses_when_status_differs(tmp_path: Path) -> None:
+    conn = _setup(tmp_path)
+    job_id = enqueue(conn, url="u", kind=JobKind.VIDEO, format_pref="best", output_dir="/o")
+    conn.execute("UPDATE jobs SET status='canceling' WHERE id=?", (job_id,))
+    ok = finish_if_status(
+        conn,
+        job_id,
+        expected_status=JobStatus.RUNNING,
+        new_status=JobStatus.DONE,
+    )
+    assert ok is False
+    row = conn.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
+    assert row["status"] == JobStatus.CANCELING.value
+
+
+def test_finish_if_status_cas_hits_when_status_matches(tmp_path: Path) -> None:
+    conn = _setup(tmp_path)
+    job_id = enqueue(conn, url="u", kind=JobKind.VIDEO, format_pref="best", output_dir="/o")
+    conn.execute("UPDATE jobs SET status='running' WHERE id=?", (job_id,))
+    ok = finish_if_status(
+        conn,
+        job_id,
+        expected_status=JobStatus.RUNNING,
+        new_status=JobStatus.DONE,
+        output_path="/out/x.mp4",
+    )
+    assert ok is True
+    row = conn.execute(
+        "SELECT status, output_path FROM jobs WHERE id=?", (job_id,)
+    ).fetchone()
+    assert row["status"] == JobStatus.DONE.value
+    assert row["output_path"] == "/out/x.mp4"
 
 
 def test_cancel_with_children_leaves_terminal_parent_alone(tmp_path: Path) -> None:

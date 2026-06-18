@@ -216,6 +216,51 @@ def finish(
     )
 
 
+def finish_if_status(
+    conn: sqlite3.Connection,
+    job_id: str,
+    *,
+    expected_status: JobStatus,
+    new_status: JobStatus,
+    output_path: str | None = None,
+    error: str | None = None,
+) -> bool:
+    """Atomically finish a job only if it's currently in expected_status.
+
+    Used by the playlist reaper so a concurrent cancel can't be overwritten:
+    if the parent flipped from RUNNING to CANCELING between read and write,
+    the UPDATE matches zero rows and the reaper falls back to a CANCELED
+    finalization.
+    """
+    cur = conn.execute(
+        """
+        UPDATE jobs SET
+            status = ?,
+            output_path = COALESCE(?, output_path),
+            error = COALESCE(?, error),
+            finished_at = ?
+        WHERE id = ? AND status = ?
+        """,
+        (
+            new_status.value,
+            output_path,
+            error,
+            _now_ms(),
+            job_id,
+            expected_status.value,
+        ),
+    )
+    if cur.rowcount > 0:
+        kind = {
+            JobStatus.DONE: "finished",
+            JobStatus.FAILED: "failed",
+            JobStatus.CANCELED: "canceled",
+        }.get(new_status, "log")
+        record_event(conn, job_id, kind, {"output_path": output_path, "error": error})
+        return True
+    return False
+
+
 def cancel(conn: sqlite3.Connection, job_id: str) -> bool:
     """Cancel pending -> canceled directly; running -> canceling (worker observes flag)."""
     cur = conn.execute(

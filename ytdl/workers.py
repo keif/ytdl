@@ -257,21 +257,40 @@ class Supervisor:
         if job.parent_job_id is not None:
             terminal, done, failed = all_children_terminal(conn, job.parent_job_id)
             if terminal:
-                finish(
-                    conn,
-                    job.parent_job_id,
-                    status=JobStatus.DONE,
-                    output_path=None,
-                    error=(f"{failed} child(ren) failed" if failed else None),
-                )
-                self._bus.publish(
-                    {
-                        "event": "finished",
-                        "job_id": job.parent_job_id,
-                        "done": done,
-                        "failed": failed,
-                    }
-                )
+                parent = get_job(conn, job.parent_job_id)
+                if parent is not None and parent.status == JobStatus.CANCELING:
+                    # User canceled the parent while children were running.
+                    # Honor the cancel rather than overwriting with DONE.
+                    finish(
+                        conn,
+                        job.parent_job_id,
+                        status=JobStatus.CANCELED,
+                        error="canceled",
+                    )
+                    self._bus.publish(
+                        {
+                            "event": "canceled",
+                            "job_id": job.parent_job_id,
+                            "done": done,
+                            "failed": failed,
+                        }
+                    )
+                else:
+                    finish(
+                        conn,
+                        job.parent_job_id,
+                        status=JobStatus.DONE,
+                        output_path=None,
+                        error=(f"{failed} child(ren) failed" if failed else None),
+                    )
+                    self._bus.publish(
+                        {
+                            "event": "finished",
+                            "job_id": job.parent_job_id,
+                            "done": done,
+                            "failed": failed,
+                        }
+                    )
 
     async def _download_video(self, conn, job) -> None:
         loop = asyncio.get_running_loop()

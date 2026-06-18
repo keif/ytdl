@@ -239,7 +239,20 @@ def cancel(conn: sqlite3.Connection, job_id: str) -> bool:
 
 
 def revive_orphans(conn: sqlite3.Connection, *, max_attempts: int = 3) -> int:
-    """Reset `running` rows after a crash. Exhausted-attempts rows are failed."""
+    """Reset orphans after a crash.
+
+    - CANCELING (user requested cancel, worker died before observing) -> CANCELED.
+    - RUNNING with attempts >= max_attempts -> FAILED (exhausted).
+    - RUNNING -> PENDING (will be retried).
+    """
+    # Honor any in-flight cancel requests that the worker can no longer observe.
+    canceling_now = conn.execute(
+        """
+        UPDATE jobs SET status = ?, finished_at = ?
+        WHERE status = ?
+        """,
+        (JobStatus.CANCELED.value, _now_ms(), JobStatus.CANCELING.value),
+    ).rowcount
     # Mark exhausted as failed first so the reset query doesn't move them.
     exhausted = conn.execute(
         """
@@ -261,7 +274,7 @@ def revive_orphans(conn: sqlite3.Connection, *, max_attempts: int = 3) -> int:
         """,
         (JobStatus.PENDING.value, JobStatus.RUNNING.value),
     ).rowcount
-    return revived + exhausted
+    return revived + exhausted + canceling_now
 
 
 def promote_to_playlist(

@@ -149,6 +149,17 @@ def test_revive_orphans_resets_running_to_pending(tmp_path: Path) -> None:
     assert row["status"] == JobStatus.PENDING
 
 
+def test_revive_orphans_finishes_canceling_jobs(tmp_path: Path) -> None:
+    conn = _setup(tmp_path)
+    job_id = enqueue(conn, url="u", kind=JobKind.VIDEO, format_pref="best", output_dir="/o")
+    claim_one(conn)  # RUNNING
+    cancel(conn, job_id)  # CANCELING
+    n = revive_orphans(conn)
+    assert n == 1
+    row = conn.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
+    assert row["status"] == JobStatus.CANCELED.value
+
+
 def test_revive_orphans_marks_exhausted_as_failed(tmp_path: Path) -> None:
     conn = _setup(tmp_path)
     job_id = enqueue(conn, url="u", kind=JobKind.VIDEO, format_pref="best", output_dir="/o")

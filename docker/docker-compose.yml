@@ -1,0 +1,15 @@
+services:
+  ytdl:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: ytdl:local
+    container_name: ytdl
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    volumes:
+      - ~/Videos/ytdl:/downloads
+      - ./data:/data
+    environment:
+      - YTDL_WORKERS=2

@@ -25,24 +25,82 @@ console = Console()
 _OUTPUT_DIR_OPTION: Path | None = typer.Option(None, "--output", "-o", help="Override output dir")
 
 
-@app.command()
-def get(
-    url: str = typer.Argument(..., help="URL to download"),
-    format_pref: str = typer.Option(
-        "best", "--format", "-f", help="best | 1080p | audio_only | <yt-dlp format>"
-    ),
-    output_dir: Path | None = _OUTPUT_DIR_OPTION,
+def _parse_pick(spec: str, *, max_index: int) -> list[int]:
+    """Parse ``--pick 1,3,5-9`` into a sorted, deduped list of 1-based indices.
+
+    Raises ``typer.BadParameter`` on malformed input or out-of-range entries.
+    """
+    if not spec.strip():
+        raise typer.BadParameter("pick spec must not be empty")
+    selected: set[int] = set()
+    for raw in spec.split(","):
+        token = raw.strip()
+        if not token:
+            continue
+        if "-" in token:
+            lo_s, hi_s = token.split("-", 1)
+            try:
+                lo, hi = int(lo_s), int(hi_s)
+            except ValueError as exc:
+                raise typer.BadParameter(f"bad range: {token!r}") from exc
+            if lo > hi:
+                raise typer.BadParameter(f"empty range: {token!r}")
+            for i in range(lo, hi + 1):
+                selected.add(i)
+        else:
+            try:
+                selected.add(int(token))
+            except ValueError as exc:
+                raise typer.BadParameter(f"bad index: {token!r}") from exc
+    if not selected:
+        raise typer.BadParameter("pick spec yielded no indices")
+    bad = [i for i in selected if i < 1 or i > max_index]
+    if bad:
+        raise typer.BadParameter(
+            f"indices out of range (1..{max_index}): {sorted(bad)}"
+        )
+    return sorted(selected)
+
+
+def _preview_entries(url: str, cookies_browser: str | None) -> tuple[str, list[dict]]:
+    """Run a flat probe and normalize into (kind, [{url,title,position}]).
+
+    Used by both `preview` and the `--pick` paths so the index numbering
+    stays consistent across commands.
+    """
+    from ytdl.downloader import probe
+
+    info = probe(url, cookies_browser=cookies_browser)
+    kind = "playlist" if info.get("_type") == "playlist" else "video"
+    raw_entries = info.get("entries") if kind == "playlist" else [info]
+    entries: list[dict] = []
+    for idx, entry in enumerate(raw_entries or []):
+        if not isinstance(entry, dict):
+            continue
+        entry_url = entry.get("webpage_url") or entry.get("url") or ""
+        if not entry_url:
+            continue
+        entries.append(
+            {
+                "url": entry_url,
+                "title": entry.get("title"),
+                "position": entry.get("playlist_index") or (idx + 1),
+            }
+        )
+    return kind, entries
+
+
+def _download_one(
+    url: str, *, format_pref: str, output_dir: Path, cookies_browser: str | None
 ) -> None:
-    """Download a single URL directly (synchronous, no server)."""
+    """Synchronously download a single URL, printing percent progress."""
     from yt_dlp import YoutubeDL  # late import to keep CLI startup snappy
 
     from ytdl.downloader import DownloadContext, download
     from ytdl.models import Job, JobStatus
     from ytdl.ulid import new_ulid
 
-    cfg = load_config()
-    out = output_dir or cfg.output_dir
-    out.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
     job = Job(
         id=new_ulid(),
         url=url,
@@ -50,7 +108,7 @@ def get(
         parent_job_id=None,
         status=JobStatus.RUNNING,
         format_pref=format_pref,
-        output_dir=str(out),
+        output_dir=str(output_dir),
     )
 
     last_pct = -1
@@ -67,13 +125,87 @@ def get(
 
     ctx = DownloadContext(
         ydl_cls=YoutubeDL,
-        cookies_browser=cfg.cookies_browser,
+        cookies_browser=cookies_browser,
         on_progress=on_progress,
         cancel_flag=lambda: False,
     )
     console.print(f"[bold]Downloading[/bold] {url}")
     result = download(job, ctx)
     console.print(f"[green]Done[/green] -> {result.output_path}")
+
+
+@app.command()
+def get(
+    url: str = typer.Argument(..., help="URL to download"),
+    format_pref: str = typer.Option(
+        "best", "--format", "-f", help="best | 1080p | audio_only | <yt-dlp format>"
+    ),
+    output_dir: Path | None = _OUTPUT_DIR_OPTION,
+    pick: str | None = typer.Option(
+        None,
+        "--pick",
+        help="When URL is a playlist, download only these 1-based entries "
+        "(e.g. '1,3,5-9'). Without --pick the entire playlist is downloaded.",
+    ),
+) -> None:
+    """Download a URL directly (synchronous, no server).
+
+    Plain video: downloads the video.
+    Playlist URL with --pick: probes the playlist, narrows to the picked
+    entries, and downloads each in order.
+    Playlist URL without --pick: downloads the whole list (yt-dlp default).
+    """
+    cfg = load_config()
+    out = output_dir or cfg.output_dir
+
+    if pick is None:
+        _download_one(
+            url,
+            format_pref=format_pref,
+            output_dir=out,
+            cookies_browser=cfg.cookies_browser,
+        )
+        return
+
+    kind, entries = _preview_entries(url, cfg.cookies_browser)
+    if kind != "playlist" or not entries:
+        raise typer.BadParameter(
+            "--pick requires a playlist URL with at least one entry"
+        )
+    indices = _parse_pick(pick, max_index=len(entries))
+    console.print(
+        f"[bold]Picked {len(indices)} of {len(entries)}[/bold] from playlist"
+    )
+    for i in indices:
+        entry = entries[i - 1]
+        title = entry["title"] or entry["url"]
+        console.print(f"[cyan]{i:>3}.[/cyan] {title}")
+        _download_one(
+            entry["url"],
+            format_pref=format_pref,
+            output_dir=out,
+            cookies_browser=cfg.cookies_browser,
+        )
+
+
+@app.command()
+def preview(
+    url: str = typer.Argument(..., help="URL to probe"),
+) -> None:
+    """Print a numbered listing of a playlist's entries (or the single video).
+
+    Pairs with `ytdl get --pick` / `ytdl queue add --pick`: pick entries by
+    the index shown in the leftmost column.
+    """
+    cfg = load_config()
+    kind, entries = _preview_entries(url, cfg.cookies_browser)
+    if not entries:
+        console.print("[yellow]no entries[/yellow]")
+        return
+    table = Table("#", "title", "url", title=f"{kind}: {len(entries)} entries")
+    for i, entry in enumerate(entries, start=1):
+        table.add_row(str(i), entry["title"] or "—", entry["url"])
+    console.print(table)
 
 
 @app.command()
@@ -112,20 +244,68 @@ def queue_ls(status: str | None = typer.Option(None, "--status")) -> None:
 def queue_add(
     url: str,
     format_pref: str = typer.Option("best", "--format", "-f"),
+    pick: str | None = typer.Option(
+        None,
+        "--pick",
+        help="When URL is a playlist, enqueue only these 1-based entries "
+        "(e.g. '1,3,5-9'). Without --pick, the URL is enqueued as-is and "
+        "the worker handles playlist expansion.",
+    ),
 ) -> None:
-    """Enqueue a single URL for the worker pool to pick up."""
+    """Enqueue a URL for the worker pool to pick up.
+
+    Without --pick: enqueues the URL as a single VIDEO job; the worker
+    detects playlists and expands them into children.
+    With --pick: probes the playlist here (synchronously) and enqueues only
+    the picked entries as standalone VIDEO jobs.
+    """
     cfg = load_config()
     conn = connect(cfg.db_path)
     migrate(conn)
-    job_id = enqueue(
-        conn,
-        url=url,
-        kind=JobKind.VIDEO,
-        format_pref=format_pref,
-        output_dir=str(cfg.output_dir),
-    )
-    conn.close()
-    console.print(f"queued [bold]{job_id}[/bold]")
+    try:
+        if pick is None:
+            job_id = enqueue(
+                conn,
+                url=url,
+                kind=JobKind.VIDEO,
+                format_pref=format_pref,
+                output_dir=str(cfg.output_dir),
+            )
+            console.print(f"queued [bold]{job_id}[/bold]")
+            return
+
+        kind, entries = _preview_entries(url, cfg.cookies_browser)
+        if kind != "playlist" or not entries:
+            raise typer.BadParameter(
+                "--pick requires a playlist URL with at least one entry"
+            )
+        indices = _parse_pick(pick, max_index=len(entries))
+        ids: list[str] = []
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            for i in indices:
+                entry = entries[i - 1]
+                ids.append(
+                    enqueue(
+                        conn,
+                        url=entry["url"],
+                        kind=JobKind.VIDEO,
+                        format_pref=format_pref,
+                        output_dir=str(cfg.output_dir),
+                    )
+                )
+            conn.execute("COMMIT")
+        except BaseException:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
+        console.print(
+            f"queued [bold]{len(ids)}[/bold] picked entries from playlist"
+        )
+    finally:
+        conn.close()
 
 
 @cookies_app.command("use")

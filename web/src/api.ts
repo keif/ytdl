@@ -54,7 +54,72 @@ export async function createJob(url: string, formatPref?: string): Promise<Job> 
   return r.json();
 }
 
+export async function createJobsFromPick(
+  urls: string[],
+  formatPref?: string
+): Promise<Job> {
+  const r = await fetch("/jobs", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ urls, format_pref: formatPref }),
+  });
+  if (!r.ok) {
+    const detail = await r.json().catch(() => ({}));
+    throw new Error(detail.detail?.[0]?.msg ?? `createJobsFromPick: ${r.status}`);
+  }
+  return r.json();
+}
+
 export async function cancelJob(id: string): Promise<void> {
   const r = await fetch(`/jobs/${id}`, { method: "DELETE" });
   if (!r.ok) throw new Error(`cancelJob: ${r.status}`);
+}
+
+export interface PreviewEntry {
+  url: string;
+  id: string | null;
+  title: string | null;
+  position: number | null;
+}
+
+export interface PreviewResponse {
+  kind: "video" | "playlist";
+  title: string | null;
+  entries: PreviewEntry[];
+}
+
+export async function previewUrl(url: string): Promise<PreviewResponse> {
+  const r = await fetch("/preview", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ url }),
+  });
+  if (!r.ok) {
+    const detail = await r.json().catch(() => ({}));
+    throw new Error(detail.detail ?? detail.detail?.[0]?.msg ?? `preview: ${r.status}`);
+  }
+  return r.json();
+}
+
+export interface EnrichedEntry {
+  url: string;
+  title: string | null;
+  duration_s: number | null;
+  uploader: string | null;
+  thumbnail_url: string | null;
+  error: string | null;
+}
+
+export interface EnrichResponse {
+  entries: EnrichedEntry[];
+}
+
+export async function enrichUrls(urls: string[]): Promise<EnrichResponse> {
+  const r = await fetch("/preview/enrich", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ urls }),
+  });
+  if (!r.ok) throw new Error(`enrich: ${r.status}`);
+  return r.json();
 }

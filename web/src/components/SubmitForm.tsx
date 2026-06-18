@@ -1,9 +1,15 @@
 import { useState } from "react";
 
 interface Props {
+  /** Final action: format string is the user's chosen format. */
   onSubmit: (url: string, format: string) => Promise<void>;
 }
 
+/**
+ * URL entry form. The actual submit semantics (single video vs. playlist
+ * picker flow) are owned by App.tsx — this component just collects input
+ * and surfaces local validation/error state.
+ */
 export function SubmitForm({ onSubmit }: Props) {
   const [url, setUrl] = useState("");
   const [format, setFormat] = useState("best");

@@ -181,6 +181,25 @@ def probe(url: str, *, cookies_browser: str | None = None) -> dict:
         return ydl.extract_info(url, download=False, process=False)
 
 
+def probe_one(url: str, *, cookies_browser: str | None = None) -> dict:
+    """Full per-video metadata (title, duration, uploader, thumbnail).
+
+    Slower than ``probe()`` — one HTTP fetch per call. Use for lazy
+    enrichment after a flat preview, not for upfront playlist listing.
+    """
+    from yt_dlp import YoutubeDL
+
+    opts: dict = {
+        "quiet": True,
+        "skip_download": True,
+        "noplaylist": True,
+    }
+    if cookies_browser:
+        opts["cookiesfrombrowser"] = (cookies_browser,)
+    with YoutubeDL(opts) as ydl:
+        return ydl.extract_info(url, download=False, process=False)
+
+
 def download(job, ctx: DownloadContext) -> DownloadResult:
     throttle = ProgressThrottle(interval_s=ctx.throttle_interval_s)
     opts = _build_ydl_options(job, ctx, throttle)

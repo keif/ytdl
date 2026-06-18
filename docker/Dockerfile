@@ -11,9 +11,10 @@ FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS app
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY pyproject.toml uv.lock* ./
-RUN uv sync --frozen --no-dev || uv sync --no-dev
+RUN uv sync --frozen --no-dev --no-install-project || uv sync --no-dev --no-install-project
 COPY ytdl/ ./ytdl/
 COPY --from=web-build /ytdl/web /app/ytdl/web
+RUN uv sync --frozen --no-dev || uv sync --no-dev
 
 ENV YTDL_DB_PATH=/data/ytdl.db
 ENV YTDL_OUTPUT_DIR=/downloads

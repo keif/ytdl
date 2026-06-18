@@ -209,6 +209,24 @@ def test_download_progress_hook_fires_through_throttle(tmp_path: Path) -> None:
     assert captured[0]["status"] == "downloading"
 
 
+def test_build_ydl_options_sets_noplaylist(tmp_path: Path) -> None:
+    """A URL like ?v=X&list=Y should download only the single video.
+
+    yt-dlp respects noplaylist=True by treating the &list= as context.
+    """
+    from ytdl.downloader import _build_ydl_options
+
+    job = _make_job(tmp_path)
+    ctx = DownloadContext(
+        ydl_cls=None,
+        cookies_browser=None,
+        on_progress=lambda d: None,
+        cancel_flag=lambda: False,
+    )
+    opts = _build_ydl_options(job, ctx, ProgressThrottle())
+    assert opts["noplaylist"] is True
+
+
 def test_download_aborts_when_cancel_flag_set(tmp_path: Path) -> None:
     from ytdl.downloader import DownloadCancelled
 

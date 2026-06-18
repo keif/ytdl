@@ -86,6 +86,24 @@ def test_classify_unavailable() -> None:
     assert classify_error(_err("Video unavailable")) == Classification.UNAVAILABLE
 
 
+def test_classify_http_403_as_forbidden() -> None:
+    assert classify_error(_err("HTTP Error 403: Forbidden")) == Classification.FORBIDDEN
+
+
+def test_classify_requested_format_unavailable_as_forbidden() -> None:
+    assert (
+        classify_error(_err("Requested format is not available"))
+        == Classification.FORBIDDEN
+    )
+
+
+def test_classify_no_video_formats_as_forbidden() -> None:
+    assert (
+        classify_error(_err("[youtube] X: No video formats found!"))
+        == Classification.FORBIDDEN
+    )
+
+
 def test_classify_disk_full() -> None:
     err = OSError(28, "No space left on device")
     assert classify_error(err) == Classification.DISK_FULL

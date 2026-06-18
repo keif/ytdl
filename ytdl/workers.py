@@ -49,8 +49,12 @@ log = logging.getLogger(__name__)
 Downloader = Callable[[Any, DownloadContext], DownloadResult]
 
 _FORBIDDEN_HINT = (
-    "YouTube may be blocking unauthenticated requests; try "
-    "`ytdl cookies use <browser>` and restart the server."
+    "YouTube returned no usable formats. Two common causes: "
+    "(1) yt-dlp couldn't solve YouTube's `n` challenge — install a JS runtime "
+    "(`brew install deno` on macOS) and restart the server, or "
+    "(2) the request was treated as unauthenticated — run "
+    "`ytdl cookies use <browser>` and restart. "
+    "See https://github.com/yt-dlp/yt-dlp/wiki/EJS for details."
 )
 
 

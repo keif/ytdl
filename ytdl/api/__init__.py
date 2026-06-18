@@ -67,6 +67,15 @@ def build_app(config: Config) -> FastAPI:
 
     app.include_router(routes_preview.router)
 
+    @app.get("/status", tags=["status"])
+    def status() -> dict:
+        """Return runtime cookies status for the web UI header chip."""
+        cfg: Config = app.state.config
+        return {
+            "cookies_browser": cfg.cookies_browser,
+            "cookies_source": cfg.cookies_source,
+        }
+
     # Serve the built Vite bundle when present. The Dockerfile copies the
     # production build into ytdl/web/; in dev there's no bundle and Vite
     # proxies the API calls instead. Mount AFTER API routers so /jobs,

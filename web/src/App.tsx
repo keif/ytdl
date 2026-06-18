@@ -4,12 +4,14 @@ import {
   createJob,
   createJobsFromPick,
   enrichUrls,
+  fetchStatus,
   listJobs,
   previewUrl,
   retryJob,
   type EnrichedEntry,
   type Job,
   type PreviewResponse,
+  type StatusResponse,
 } from "./api";
 import { SubmitForm } from "./components/SubmitForm";
 import { PreviewVideo } from "./components/PreviewVideo";
@@ -42,6 +44,7 @@ export default function App() {
   const [singleEnriched, setSingleEnriched] = useState<EnrichedEntry | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [status, setStatus] = useState<StatusResponse | null>(null);
 
   const refreshDebounce = useRef<number | null>(null);
   const previewDebounce = useRef<number | null>(null);
@@ -153,6 +156,12 @@ export default function App() {
     };
   }, []);
 
+  // Fetch cookies status once at mount so the header can show what yt-dlp
+  // will read at job time. Best effort — a 4xx/5xx leaves the chip empty.
+  useEffect(() => {
+    fetchStatus().then(setStatus).catch(() => {});
+  }, []);
+
   const sseState = useJobsStream(() => {
     // Trailing-edge debounce: bursts of events (e.g. playlist expansion)
     // result in at most one refresh per REFRESH_DEBOUNCE_MS.
@@ -209,7 +218,19 @@ export default function App() {
           <h1 className="text-2xl font-semibold">ytdl</h1>
           <p className="text-sm text-neutral-400">Self-hosted yt-dlp queue</p>
         </div>
-        <span className="text-xs text-neutral-500">{sseState}</span>
+        <span className="text-xs text-neutral-500">
+          {status && (
+            <>
+              {status.cookies_browser
+                ? `cookies: ${status.cookies_browser}${
+                    status.cookies_source === "autodetect" ? " (auto)" : ""
+                  }`
+                : "cookies: none"}
+              {" · "}
+            </>
+          )}
+          {sseState}
+        </span>
       </header>
 
       <SubmitForm

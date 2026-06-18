@@ -329,6 +329,16 @@ class Supervisor:
                     uploader=result.uploader,
                     duration_s=result.duration_s,
                 )
+                # On success, ensure bytes_done reflects the full file. The
+                # throttled progress hook may have only captured a partial
+                # value if the download finished in a single tick.
+                if result.filesize_bytes:
+                    update_progress(
+                        conn,
+                        job.id,
+                        bytes_done=result.filesize_bytes,
+                        filesize_bytes=result.filesize_bytes,
+                    )
                 finish(conn, job.id, status=JobStatus.DONE, output_path=result.output_path)
                 self._bus.publish({"event": "finished", "job_id": job.id})
                 return

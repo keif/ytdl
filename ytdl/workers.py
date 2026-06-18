@@ -264,20 +264,38 @@ class Supervisor:
                     # Empty playlist: all_children_terminal would never fire
                     # the reaper. Finish the parent now so the queue drains.
                     if enqueued_children == 0:
-                        finish(
-                            conn,
-                            job.id,
-                            status=JobStatus.DONE,
-                            output_path=None,
-                            error="empty playlist",
-                        )
-                        conn.execute("COMMIT")
-                        committed = True
-                        # Publish events AFTER commit so subscribers see
-                        # committed state.
-                        self._bus.publish(
-                            {"event": "finished", "job_id": job.id, "done": 0, "failed": 0}
-                        )
+                        if parent_canceled_pre:
+                            # Cancel-during-probe with an empty playlist:
+                            # honor the user's cancel, don't overwrite as
+                            # an "empty playlist DONE".
+                            done = finish_if_status(
+                                conn,
+                                job.id,
+                                expected_status=JobStatus.CANCELING,
+                                new_status=JobStatus.CANCELED,
+                                error="canceled",
+                            )
+                            conn.execute("COMMIT")
+                            committed = True
+                            if done:
+                                self._bus.publish(
+                                    {"event": "canceled", "job_id": job.id, "done": 0, "failed": 0}
+                                )
+                        else:
+                            finish(
+                                conn,
+                                job.id,
+                                status=JobStatus.DONE,
+                                output_path=None,
+                                error="empty playlist",
+                            )
+                            conn.execute("COMMIT")
+                            committed = True
+                            # Publish events AFTER commit so subscribers see
+                            # committed state.
+                            self._bus.publish(
+                                {"event": "finished", "job_id": job.id, "done": 0, "failed": 0}
+                            )
                         return
 
                     # Pre-loop snapshot saw the cancel: parent already known

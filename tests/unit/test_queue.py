@@ -274,6 +274,25 @@ def test_cancel_with_children_atomic_parent_first(tmp_path: Path) -> None:
     assert row["status"] == JobStatus.CANCELING.value
 
 
+def test_cancel_with_children_does_not_finalize_standalone_running_video(tmp_path: Path) -> None:
+    """A standalone (non-playlist) running video must stay CANCELING after
+    cancel — the active downloader thread owns the terminal transition.
+    Finalizing here would race ahead of the worker's DownloadCancelled
+    handler."""
+    conn = _setup(tmp_path)
+    job_id = enqueue(
+        conn, url="https://yt/x", kind=JobKind.VIDEO,
+        format_pref="best", output_dir="/o",
+    )
+    conn.execute("UPDATE jobs SET status='running' WHERE id=?", (job_id,))
+    # Standalone video — no children, kind=VIDEO.
+    assert cancel_with_children(conn, job_id) is True
+    row = conn.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
+    assert row["status"] == JobStatus.CANCELING.value, (
+        f"standalone video should stay CANCELING after cancel; got {row['status']}"
+    )
+
+
 def test_finish_if_status_cas_misses_when_status_differs(tmp_path: Path) -> None:
     conn = _setup(tmp_path)
     job_id = enqueue(conn, url="u", kind=JobKind.VIDEO, format_pref="best", output_dir="/o")

@@ -65,9 +65,9 @@ That writes the chosen browser into `config.toml`. The CLI (`ytdl get`) picks up
 
 If a download fails with `Sign in to confirm your age` or `Private video`, run `cookies use` to point at the browser where you're actually signed in.
 
-## yt-dlp's JS runtime requirement (do this — it's not optional in practice)
+## yt-dlp's JS runtime (recommended)
 
-YouTube's extractor sends an obfuscated JavaScript `n` parameter that yt-dlp has to solve before any video format URL is usable. Without a JS runtime installed, yt-dlp logs `n challenge solving failed: Some formats may be missing` and YouTube returns no usable formats — the job fails with `Requested format is not available`.
+YouTube sometimes wraps format URLs with an obfuscated JavaScript `n` parameter that yt-dlp has to solve to get a usable URL. Without a JS runtime installed, you'll see `n challenge solving failed: Some formats may be missing` and — depending on which format yt-dlp picks — the job may fail with `Requested format is not available`. yt-dlp has native paths that handle some URLs without a runtime, so it's not a hard requirement, but a runtime closes the most common failure mode you're likely to hit.
 
 Install deno once:
 
@@ -136,7 +136,7 @@ Requirements:
 - Python 3.12+ via [uv](https://docs.astral.sh/uv/) (manages venv + lockfile)
 - Node 22+ via [pnpm](https://pnpm.io/) (for the web UI)
 - `ffmpeg` on PATH (yt-dlp uses it to merge separate audio/video streams)
-- `deno` on PATH (strongly recommended — yt-dlp's n-challenge solver needs it for most YouTube URLs; see above)
+- `deno` on PATH (recommended — yt-dlp uses it to solve YouTube's n-challenge when it appears; see above)
 
 Setup:
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -205,17 +206,26 @@ class Supervisor:
                 return
 
             if info.get("_type") == "playlist":
+                # Re-read the parent's current status — the user may have
+                # canceled the parent while we were probing. If so, mark
+                # all the children as canceled-on-arrival instead of
+                # enqueueing them as PENDING.
+                current = get_job(conn, job.id)
+                parent_canceled = (
+                    current is not None and current.status != JobStatus.RUNNING
+                )
+
                 playlist_title = info.get("title") or "Playlist"
                 safe_title = _sanitize_path_component(playlist_title)
                 promote_to_playlist(conn, job.id, title=playlist_title)
                 playlist_subdir = Path(job.output_dir) / safe_title
-                entries = info.get("entries") or []
+
                 enqueued_children = 0
-                for entry in entries:
+                for entry in info.get("entries") or []:
                     child_url = entry.get("webpage_url") or entry.get("url") or ""
                     if not child_url:
                         continue
-                    enqueue(
+                    child_id = enqueue(
                         conn,
                         url=child_url,
                         kind=JobKind.VIDEO,
@@ -223,9 +233,45 @@ class Supervisor:
                         output_dir=str(playlist_subdir),
                         parent_job_id=job.id,
                     )
+                    if parent_canceled:
+                        conn.execute(
+                            "UPDATE jobs SET status=?, finished_at=? WHERE id=?",
+                            (
+                                JobStatus.CANCELED.value,
+                                int(time.time() * 1000),
+                                child_id,
+                            ),
+                        )
+                        record_event(
+                            conn,
+                            child_id,
+                            "canceled",
+                            {"reason": "parent canceled before expansion"},
+                        )
                     enqueued_children += 1
 
-                if enqueued_children == 0:
+                if parent_canceled:
+                    # Parent was already canceled mid-probe. All children we
+                    # just enqueued are pre-marked CANCELED, so no worker
+                    # will ever fire the reaper for this parent. Finalize
+                    # the parent here (CAS from CANCELING -> CANCELED).
+                    if finish_if_status(
+                        conn,
+                        job.id,
+                        expected_status=JobStatus.CANCELING,
+                        new_status=JobStatus.CANCELED,
+                        output_path=None,
+                        error="canceled",
+                    ):
+                        self._bus.publish(
+                            {
+                                "event": "canceled",
+                                "job_id": job.id,
+                                "done": 0,
+                                "failed": enqueued_children,
+                            }
+                        )
+                elif enqueued_children == 0:
                     # No children means all_children_terminal would never fire
                     # the reaper. Finish the parent now so the queue drains.
                     finish(

@@ -209,6 +209,7 @@ class Supervisor:
                 promote_to_playlist(conn, job.id, title=playlist_title)
                 playlist_subdir = Path(job.output_dir) / safe_title
                 entries = info.get("entries") or []
+                enqueued_children = 0
                 for entry in entries:
                     child_url = entry.get("webpage_url") or entry.get("url") or ""
                     if not child_url:
@@ -221,15 +222,31 @@ class Supervisor:
                         output_dir=str(playlist_subdir),
                         parent_job_id=job.id,
                     )
-                # Parent stays RUNNING until all children reach a terminal
-                # state; the last child to finish flips the parent (see below).
-                self._bus.publish(
-                    {
-                        "event": "expanded",
-                        "job_id": job.id,
-                        "child_count": len(entries),
-                    }
-                )
+                    enqueued_children += 1
+
+                if enqueued_children == 0:
+                    # No children means all_children_terminal would never fire
+                    # the reaper. Finish the parent now so the queue drains.
+                    finish(
+                        conn,
+                        job.id,
+                        status=JobStatus.DONE,
+                        output_path=None,
+                        error="empty playlist",
+                    )
+                    self._bus.publish(
+                        {"event": "finished", "job_id": job.id, "done": 0, "failed": 0}
+                    )
+                else:
+                    # Parent stays RUNNING until all children reach a terminal
+                    # state; the last child to finish flips the parent (see below).
+                    self._bus.publish(
+                        {
+                            "event": "expanded",
+                            "job_id": job.id,
+                            "child_count": enqueued_children,
+                        }
+                    )
                 return
 
         # Regular video download (top-level video OR playlist child).

@@ -71,7 +71,18 @@ def list_endpoint(
 ) -> JobList:
     conn = _conn(request)
     try:
-        parsed_status = JobStatus(status) if status else None
+        parsed_status: JobStatus | None = None
+        if status:
+            try:
+                parsed_status = JobStatus(status)
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"unknown status {status!r}; "
+                        "valid: pending|running|done|failed|canceling|canceled"
+                    ),
+                ) from exc
         jobs = list_jobs(conn, status=parsed_status, limit=limit, offset=offset)
         return JobList(jobs=[_to_out(j) for j in jobs], total=len(jobs))
     finally:

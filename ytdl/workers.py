@@ -601,8 +601,19 @@ class Supervisor:
                         )
                         return
                     continue
+                if cls == Classification.FORBIDDEN:
+                    # Anti-bot / cookie-required. The user's actual fix is to
+                    # wire up browser cookies, so surface that hint directly
+                    # on the job row's error field — the UI displays it.
+                    error_msg = (
+                        f"[{cls.value}] {exc}. YouTube may be blocking "
+                        "unauthenticated requests; try "
+                        "`ytdl cookies use <browser>` and restart the server."
+                    )
+                else:
+                    error_msg = f"[{cls.value}] {exc}"
                 failed_id = finish(
-                    conn, job.id, status=JobStatus.FAILED, error=f"[{cls.value}] {exc}"
+                    conn, job.id, status=JobStatus.FAILED, error=error_msg
                 )
                 self._bus.publish(
                     {

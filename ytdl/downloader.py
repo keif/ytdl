@@ -147,6 +147,9 @@ def _build_ydl_options(job, ctx: DownloadContext, throttle: ProgressThrottle) ->
         "progress_hooks": [hook],
         "merge_output_format": "mp4",
         "concurrent_fragment_downloads": 4,
+        # Treat ?v=X&list=Y as a single video with playlist context, not the
+        # playlist itself. Pure playlist URLs (no ?v=) are unaffected.
+        "noplaylist": True,
     }
     if ctx.cookies_browser:
         opts["cookiesfrombrowser"] = (ctx.cookies_browser,)
@@ -158,6 +161,11 @@ def probe(url: str, *, cookies_browser: str | None = None) -> dict:
 
     Uses extract_flat='in_playlist' so playlist entries return as lightweight
     references rather than full per-entry metadata fetches.
+
+    noplaylist=True follows yt-dlp's convention: a URL like ?v=X&list=Y is
+    treated as a single video with playlist context, not as the playlist
+    itself. Pure playlist URLs (?list=PLxxx with no ?v=) are still detected
+    as playlists because there's no video to anchor to.
     """
     from yt_dlp import YoutubeDL
 
@@ -165,6 +173,7 @@ def probe(url: str, *, cookies_browser: str | None = None) -> dict:
         "quiet": True,
         "extract_flat": "in_playlist",
         "skip_download": True,
+        "noplaylist": True,
     }
     if cookies_browser:
         opts["cookiesfrombrowser"] = (cookies_browser,)

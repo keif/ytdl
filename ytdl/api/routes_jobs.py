@@ -98,6 +98,9 @@ def delete_endpoint(job_id: str, request: Request) -> Response:
         if job is None:
             raise HTTPException(status_code=404, detail="job not found")
         cancel(conn, job_id)
+        sup = getattr(request.app.state, "supervisor", None)
+        if sup is not None:
+            sup.request_cancel(job_id)
         return Response(status_code=204)
     finally:
         conn.close()

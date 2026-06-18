@@ -38,6 +38,9 @@ def build_app(config: Config) -> FastAPI:
                 cookies_browser=config.cookies_browser,
             )
             await supervisor.start()
+            app.state.supervisor = supervisor
+        else:
+            app.state.supervisor = None
         try:
             yield
         finally:

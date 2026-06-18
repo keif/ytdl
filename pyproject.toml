@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Self-hosted yt-dlp downloader with CLI and web UI"
 requires-python = ">=3.12"
 dependencies = [
-  "fastapi>=0.115",
+  "fastapi>=0.137.2",
   "uvicorn[standard]>=0.49.0",
   "sqlmodel>=0.0.38",
   "yt-dlp>=2024.12.13",

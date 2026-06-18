@@ -88,11 +88,15 @@ export interface PreviewResponse {
   entries: PreviewEntry[];
 }
 
-export async function previewUrl(url: string): Promise<PreviewResponse> {
+export async function previewUrl(
+  url: string,
+  opts?: { signal?: AbortSignal }
+): Promise<PreviewResponse> {
   const r = await fetch("/preview", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ url }),
+    signal: opts?.signal,
   });
   if (!r.ok) {
     const detail = await r.json().catch(() => ({}));

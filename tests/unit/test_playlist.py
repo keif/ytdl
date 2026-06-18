@@ -152,6 +152,42 @@ def test_sanitize_strips_null_bytes() -> None:
     assert _sanitize_path_component("a\x00b") == "ab"
 
 
+@pytest.mark.asyncio
+async def test_empty_playlist_finishes_parent_immediately(tmp_path: Path) -> None:
+    from ytdl.workers import Supervisor
+
+    db = tmp_path / "t.db"
+    conn = connect(db)
+    migrate(conn)
+    parent_id = enqueue(
+        conn,
+        url="https://yt/playlist?list=PL",
+        kind=JobKind.VIDEO,
+        format_pref="best",
+        output_dir=str(tmp_path),
+    )
+
+    bus = EventsBus()
+    sup = Supervisor(
+        db_path=db,
+        workers=1,
+        bus=bus,
+        downloader=lambda job, ctx: None,  # never called for an empty playlist
+        probe=lambda url: {"_type": "playlist", "title": "Empty", "entries": []},
+        cookies_browser=None,
+        retry_delays_s=(0, 0),
+        rate_limit_delay_s=0,
+    )
+    await sup.start()
+    await sup.wait_idle(timeout=2.0)
+    await sup.stop()
+
+    parent = get_job(conn, parent_id)
+    assert parent is not None
+    assert parent.status == JobStatus.DONE
+    assert parent.error == "empty playlist"
+
+
 def test_default_probe_adapter_forwards_cookies(monkeypatch: pytest.MonkeyPatch) -> None:
     """The supervisor's default probe path must pass the configured browser to yt-dlp."""
     captured: dict = {}

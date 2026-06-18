@@ -1,5 +1,5 @@
-import { render, screen } from "@testing-library/react";
-import { describe, it, expect } from "vitest";
+import { act, render, screen } from "@testing-library/react";
+import { describe, it, expect, vi } from "vitest";
 import { JobRow } from "../src/components/JobRow";
 import type { Job } from "../src/api";
 
@@ -29,12 +29,12 @@ const baseJob: Job = {
 
 describe("JobRow", () => {
   it("shows the title when present", () => {
-    render(<JobRow job={baseJob} onCancel={() => {}} />);
+    render(<JobRow job={baseJob} onCancel={() => {}} onRetry={() => {}} />);
     expect(screen.getByText("My Video")).toBeInTheDocument();
   });
 
   it("renders a progress percentage for running jobs", () => {
-    render(<JobRow job={baseJob} onCancel={() => {}} />);
+    render(<JobRow job={baseJob} onCancel={() => {}} onRetry={() => {}} />);
     expect(screen.getByText(/50%/)).toBeInTheDocument();
   });
 
@@ -43,6 +43,7 @@ describe("JobRow", () => {
       <JobRow
         job={{ ...baseJob, status: "failed", error: "[auth_required] sign in" }}
         onCancel={() => {}}
+        onRetry={() => {}}
       />
     );
     expect(screen.getByText(/sign in/)).toBeInTheDocument();
@@ -50,9 +51,55 @@ describe("JobRow", () => {
 
   it("never renders untrusted titles as HTML", () => {
     const xss = "<img src=x onerror=alert(1)>";
-    render(<JobRow job={{ ...baseJob, title: xss }} onCancel={() => {}} />);
+    render(
+      <JobRow
+        job={{ ...baseJob, title: xss }}
+        onCancel={() => {}}
+        onRetry={() => {}}
+      />
+    );
     // The literal text should appear; no img element should be rendered.
     expect(screen.getByText(xss)).toBeInTheDocument();
     expect(document.querySelector("img")).toBeNull();
+  });
+
+  it("renders a Retry button for failed jobs", () => {
+    const onRetry = vi.fn();
+    render(
+      <JobRow
+        job={{ ...baseJob, status: "failed", error: "[forbidden] cookies needed" }}
+        onCancel={() => {}}
+        onRetry={onRetry}
+      />
+    );
+    const btn = screen.getByRole("button", { name: /retry/i });
+    expect(btn).toBeInTheDocument();
+  });
+
+  it("does not render Retry button for running jobs", () => {
+    render(
+      <JobRow
+        job={{ ...baseJob, status: "running" }}
+        onCancel={() => {}}
+        onRetry={() => {}}
+      />
+    );
+    expect(screen.queryByRole("button", { name: /retry/i })).not.toBeInTheDocument();
+  });
+
+  it("calls onRetry when retry is clicked", async () => {
+    const onRetry = vi.fn();
+    render(
+      <JobRow
+        job={{ ...baseJob, status: "canceled" }}
+        onCancel={() => {}}
+        onRetry={onRetry}
+      />
+    );
+    const btn = screen.getByRole("button", { name: /retry/i });
+    await act(async () => {
+      btn.click();
+    });
+    expect(onRetry).toHaveBeenCalledWith(baseJob.id);
   });
 });

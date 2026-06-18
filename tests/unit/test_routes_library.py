@@ -41,3 +41,26 @@ def test_library_lists_files(client: TestClient) -> None:
 def test_library_rejects_traversal(client: TestClient) -> None:
     r = client.get("/library?subdir=../../etc")
     assert r.status_code == 400
+
+
+def test_library_lists_files_when_output_dir_is_symlinked(tmp_path: Path) -> None:
+    """Regression test: macOS /tmp is a symlink to /private/tmp. The library
+    must list files even when output_dir traverses through a symlink."""
+    real_out = tmp_path / "real_out"
+    real_out.mkdir()
+    (real_out / "file.mp4").write_bytes(b"x" * 100)
+    sym_out = tmp_path / "via_symlink"
+    sym_out.symlink_to(real_out)
+
+    cfg = Config(
+        output_dir=sym_out,  # the config dir is symlinked
+        db_path=tmp_path / "ytdl.db",
+        workers=0,
+        cookies_browser=None,
+        default_format="best",
+    )
+    c = TestClient(build_app(cfg))
+    r = c.get("/library")
+    assert r.status_code == 200
+    paths = {item["relpath"] for item in r.json()["entries"]}
+    assert "file.mp4" in paths, f"file.mp4 missing from {paths}"

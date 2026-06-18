@@ -29,6 +29,17 @@ at `~/.config/ytdl/config.toml` or env (`YTDL_OUTPUT_DIR`, `YTDL_WORKERS`, ...).
 
 Reads your browser's cookie store at job time — no passwords stored.
 
+## Note on yt-dlp + JavaScript runtimes
+
+YouTube's newer extraction paths use JavaScript that yt-dlp evaluates via an
+external runtime (deno by default). Without one, downloads still work but
+some formats may be unavailable. Install deno once with:
+
+    brew install deno      # macOS
+    # or: curl -fsSL https://deno.land/install.sh | sh
+
+yt-dlp will pick it up automatically. No ytdl config change needed.
+
 ## Commands
 
     ytdl get <url>          # download one URL synchronously

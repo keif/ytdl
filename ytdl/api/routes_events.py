@@ -25,6 +25,14 @@ router = APIRouter(tags=["events"])
 
 
 def _format_sse(data: dict, event_id: int | None = None) -> bytes:
+    # Live events from the bus may carry their events-table row id inline as
+    # "_event_id". Promote it to the SSE id: line so EventSource advances
+    # Last-Event-ID during normal streaming, and strip it from the JSON
+    # payload (it's an internal field, not for clients). We never mutate the
+    # input dict — other subscribers may be processing the same message.
+    if event_id is None and "_event_id" in data:
+        event_id = data["_event_id"]
+        data = {k: v for k, v in data.items() if k != "_event_id"}
     out = []
     if event_id is not None:
         out.append(f"id: {event_id}")

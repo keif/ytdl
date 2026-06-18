@@ -184,7 +184,14 @@ class Supervisor:
             await asyncio.sleep(min(0.25, end - now))
 
     async def _handle_job(self, conn, job) -> None:
-        self._bus.publish({"event": "started", "job_id": job.id})
+        # Record + publish "started" here (not inside claim_one) so we capture
+        # the event-row id and ship it on the bus as _event_id. The SSE route
+        # uses that to emit the SSE id: line so EventSource can advance
+        # Last-Event-ID for resume.
+        started_id = record_event(conn, job.id, "started", {})
+        self._bus.publish(
+            {"event": "started", "job_id": job.id, "_event_id": started_id}
+        )
 
         # Playlist detection: only probe top-level VIDEO jobs. Children that
         # were enqueued via a previous expansion already carry a parent_job_id
@@ -194,14 +201,19 @@ class Supervisor:
                 info = await asyncio.to_thread(self._probe, job.url)
             except BaseException as exc:
                 cls = classify_error(exc)
-                finish(
+                fail_id = finish(
                     conn,
                     job.id,
                     status=JobStatus.FAILED,
                     error=f"[probe:{cls.value}] {exc}",
                 )
                 self._bus.publish(
-                    {"event": "failed", "job_id": job.id, "error": str(exc)}
+                    {
+                        "event": "failed",
+                        "job_id": job.id,
+                        "error": str(exc),
+                        "_event_id": fail_id,
+                    }
                 )
                 return
 
@@ -268,7 +280,7 @@ class Supervisor:
                             # Cancel-during-probe with an empty playlist:
                             # honor the user's cancel, don't overwrite as
                             # an "empty playlist DONE".
-                            done = finish_if_status(
+                            canceled_id = finish_if_status(
                                 conn,
                                 job.id,
                                 expected_status=JobStatus.CANCELING,
@@ -277,12 +289,18 @@ class Supervisor:
                             )
                             conn.execute("COMMIT")
                             committed = True
-                            if done:
+                            if canceled_id is not None:
                                 self._bus.publish(
-                                    {"event": "canceled", "job_id": job.id, "done": 0, "failed": 0}
+                                    {
+                                        "event": "canceled",
+                                        "job_id": job.id,
+                                        "done": 0,
+                                        "failed": 0,
+                                        "_event_id": canceled_id,
+                                    }
                                 )
                         else:
-                            finish(
+                            finished_id = finish(
                                 conn,
                                 job.id,
                                 status=JobStatus.DONE,
@@ -294,7 +312,13 @@ class Supervisor:
                             # Publish events AFTER commit so subscribers see
                             # committed state.
                             self._bus.publish(
-                                {"event": "finished", "job_id": job.id, "done": 0, "failed": 0}
+                                {
+                                    "event": "finished",
+                                    "job_id": job.id,
+                                    "done": 0,
+                                    "failed": 0,
+                                    "_event_id": finished_id,
+                                }
                             )
                         return
 
@@ -302,7 +326,7 @@ class Supervisor:
                     # canceled, children already CANCELED inside the loop
                     # above. Finalize the parent here (CAS CANCELING -> CANCELED).
                     if parent_canceled_pre:
-                        canceled_ok = finish_if_status(
+                        canceled_id = finish_if_status(
                             conn,
                             job.id,
                             expected_status=JobStatus.CANCELING,
@@ -312,13 +336,14 @@ class Supervisor:
                         )
                         conn.execute("COMMIT")
                         committed = True
-                        if canceled_ok:
+                        if canceled_id is not None:
                             self._bus.publish(
                                 {
                                     "event": "canceled",
                                     "job_id": job.id,
                                     "done": 0,
                                     "failed": enqueued_children,
+                                    "_event_id": canceled_id,
                                 }
                             )
                         return
@@ -350,7 +375,7 @@ class Supervisor:
                                     "canceled",
                                     {"reason": "parent canceled mid-expansion"},
                                 )
-                        canceled_ok = finish_if_status(
+                        canceled_id = finish_if_status(
                             conn,
                             job.id,
                             expected_status=JobStatus.CANCELING,
@@ -360,13 +385,14 @@ class Supervisor:
                         )
                         conn.execute("COMMIT")
                         committed = True
-                        if canceled_ok:
+                        if canceled_id is not None:
                             self._bus.publish(
                                 {
                                     "event": "canceled",
                                     "job_id": job.id,
                                     "done": 0,
                                     "failed": enqueued_children,
+                                    "_event_id": canceled_id,
                                 }
                             )
                         return
@@ -402,7 +428,7 @@ class Supervisor:
                 # Try DONE only if the parent is still RUNNING. If it raced
                 # to CANCELING via a user DELETE, this CAS misses and we
                 # honor the cancel instead.
-                done_ok = finish_if_status(
+                done_id = finish_if_status(
                     conn,
                     job.parent_job_id,
                     expected_status=JobStatus.RUNNING,
@@ -410,32 +436,35 @@ class Supervisor:
                     output_path=None,
                     error=(f"{failed} child(ren) failed" if failed else None),
                 )
-                if done_ok:
+                if done_id is not None:
                     self._bus.publish(
                         {
                             "event": "finished",
                             "job_id": job.parent_job_id,
                             "done": done,
                             "failed": failed,
+                            "_event_id": done_id,
                         }
                     )
                 else:
                     # Parent was canceled while children were finishing.
                     # Finalize as CANCELED if it's still in CANCELING.
-                    if finish_if_status(
+                    cancel_id = finish_if_status(
                         conn,
                         job.parent_job_id,
                         expected_status=JobStatus.CANCELING,
                         new_status=JobStatus.CANCELED,
                         output_path=None,
                         error="canceled",
-                    ):
+                    )
+                    if cancel_id is not None:
                         self._bus.publish(
                             {
                                 "event": "canceled",
                                 "job_id": job.parent_job_id,
                                 "done": done,
                                 "failed": failed,
+                                "_event_id": cancel_id,
                             }
                         )
                     # If neither CAS hit, another worker already finalized
@@ -507,12 +536,28 @@ class Supervisor:
                         bytes_done=result.filesize_bytes,
                         filesize_bytes=result.filesize_bytes,
                     )
-                finish(conn, job.id, status=JobStatus.DONE, output_path=result.output_path)
-                self._bus.publish({"event": "finished", "job_id": job.id})
+                finished_id = finish(
+                    conn, job.id, status=JobStatus.DONE, output_path=result.output_path
+                )
+                self._bus.publish(
+                    {
+                        "event": "finished",
+                        "job_id": job.id,
+                        "_event_id": finished_id,
+                    }
+                )
                 return
             except DownloadCancelled:
-                finish(conn, job.id, status=JobStatus.CANCELED, error="canceled")
-                self._bus.publish({"event": "canceled", "job_id": job.id})
+                canceled_id = finish(
+                    conn, job.id, status=JobStatus.CANCELED, error="canceled"
+                )
+                self._bus.publish(
+                    {
+                        "event": "canceled",
+                        "job_id": job.id,
+                        "_event_id": canceled_id,
+                    }
+                )
                 return
             except BaseException as exc:
                 cls = classify_error(exc)
@@ -521,8 +566,16 @@ class Supervisor:
                     attempt += 1
                     record_event(conn, job.id, "log", {"retry_after_s": delay, "reason": str(exc)})
                     if await self._cancellable_sleep(conn, job.id, float(delay)):
-                        finish(conn, job.id, status=JobStatus.CANCELED, error="canceled")
-                        self._bus.publish({"event": "canceled", "job_id": job.id})
+                        canceled_id = finish(
+                            conn, job.id, status=JobStatus.CANCELED, error="canceled"
+                        )
+                        self._bus.publish(
+                            {
+                                "event": "canceled",
+                                "job_id": job.id,
+                                "_event_id": canceled_id,
+                            }
+                        )
                         return
                     continue
                 if cls == Classification.RATE_LIMITED and attempt == 0:
@@ -536,17 +589,28 @@ class Supervisor:
                     if await self._cancellable_sleep(
                         conn, job.id, float(self._rate_limit_delay)
                     ):
-                        finish(conn, job.id, status=JobStatus.CANCELED, error="canceled")
-                        self._bus.publish({"event": "canceled", "job_id": job.id})
+                        canceled_id = finish(
+                            conn, job.id, status=JobStatus.CANCELED, error="canceled"
+                        )
+                        self._bus.publish(
+                            {
+                                "event": "canceled",
+                                "job_id": job.id,
+                                "_event_id": canceled_id,
+                            }
+                        )
                         return
                     continue
-                finish(conn, job.id, status=JobStatus.FAILED, error=f"[{cls.value}] {exc}")
+                failed_id = finish(
+                    conn, job.id, status=JobStatus.FAILED, error=f"[{cls.value}] {exc}"
+                )
                 self._bus.publish(
                     {
                         "event": "failed",
                         "job_id": job.id,
                         "classification": cls.value,
                         "error": str(exc),
+                        "_event_id": failed_id,
                     }
                 )
                 return

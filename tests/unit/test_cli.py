@@ -93,6 +93,37 @@ def test_preview_command_prints_entries(
     assert "Bravo" in result.output
 
 
+def test_cli_queue_retry_creates_new_job(
+    tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`ytdl queue retry <id>` creates a new pending job from a failed one."""
+    from ytdl.config import load_config
+    from ytdl.db import connect, migrate
+    from ytdl.models import JobKind
+    from ytdl.queue import enqueue
+
+    cfg = load_config()
+    conn = connect(cfg.db_path)
+    migrate(conn)
+    job_id = enqueue(
+        conn, url="https://yt/x", kind=JobKind.VIDEO,
+        format_pref="best", output_dir="/o",
+    )
+    conn.execute("UPDATE jobs SET status='failed' WHERE id=?", (job_id,))
+    conn.commit()
+    conn.close()
+
+    result = runner.invoke(app, ["queue", "retry", job_id])
+    assert result.exit_code == 0
+    assert "queued retry" in result.output
+
+
+def test_cli_queue_retry_fails_for_unknown_id(tmp_data_dir: Path) -> None:
+    result = runner.invoke(app, ["queue", "retry", "01nonexistent"])
+    assert result.exit_code != 0
+    assert "Cannot retry" in result.output
+
+
 def test_queue_add_with_pick_only_enqueues_picked(
     tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -308,6 +308,26 @@ def queue_add(
         conn.close()
 
 
+@queue_app.command("retry")
+def queue_retry(job_id: str) -> None:
+    """Re-enqueue a failed/canceled/done job as a new pending job."""
+    from ytdl.queue import retry_job
+
+    cfg = load_config()
+    conn = connect(cfg.db_path)
+    migrate(conn)
+    try:
+        new_id = retry_job(conn, job_id)
+    finally:
+        conn.close()
+    if new_id is None:
+        console.print(
+            f"[red]Cannot retry {job_id}[/red] (not found or not in a retryable state)"
+        )
+        raise typer.Exit(code=1)
+    console.print(f"queued retry as [bold]{new_id}[/bold]")
+
+
 @cookies_app.command("use")
 def cookies_use(browser: str) -> None:
     """Persist the browser yt-dlp should read cookies from."""

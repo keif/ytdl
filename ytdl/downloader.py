@@ -20,6 +20,7 @@ class Classification(StrEnum):
     TRANSIENT = "transient"
     RATE_LIMITED = "rate_limited"
     AUTH_REQUIRED = "auth_required"
+    FORBIDDEN = "forbidden"
     GEO_BLOCKED = "geo_blocked"
     UNAVAILABLE = "unavailable"
     DISK_FULL = "disk_full"
@@ -59,9 +60,20 @@ _AUTH_PATTERNS = (
     re.compile(r"members[- ]only", re.I),
     re.compile(r"login required", re.I),
 )
+# Anti-bot / cookie-needed signals. yt-dlp surfaces these when YouTube serves a
+# 403 page or refuses to hand out a playable manifest to an unauthenticated
+# client. The fix is almost always `ytdl cookies use <browser>` + restart, so
+# we classify these separately from PERMANENT and let workers.py prepend an
+# actionable hint to the saved error string.
+_FORBIDDEN_PATTERNS = (
+    re.compile(r"HTTP Error 403", re.I),
+    re.compile(r"requested format is not available", re.I),
+    re.compile(r"no video formats found", re.I),
+)
 _GEO_PATTERNS = (
     re.compile(r"geo restricted", re.I),
     re.compile(r"not available in your country", re.I),
+    re.compile(r"this video is unavailable in your country", re.I),
 )
 _UNAVAILABLE_PATTERNS = (
     re.compile(r"video unavailable", re.I),
@@ -84,6 +96,13 @@ def classify_error(exc: BaseException) -> Classification:
     for p in _AUTH_PATTERNS:
         if p.search(msg):
             return Classification.AUTH_REQUIRED
+    # Forbidden runs AFTER auth so explicit "private video" / "members only"
+    # still classify as AUTH_REQUIRED — those messages are clearer signals.
+    # But forbidden runs BEFORE geo/unavailable because YouTube's anti-bot
+    # 403 sometimes ships with a misleading "country" string.
+    for p in _FORBIDDEN_PATTERNS:
+        if p.search(msg):
+            return Classification.FORBIDDEN
     for p in _GEO_PATTERNS:
         if p.search(msg):
             return Classification.GEO_BLOCKED

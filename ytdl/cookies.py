@@ -72,18 +72,23 @@ def _candidate_paths(browser: str) -> list[Path]:
         return roots.get(name, [])
 
     if sys.platform.startswith("linux"):
+        # XDG_CONFIG_HOME overrides ~/.config (XDG Base Directory spec).
+        # Chromium-family browsers honor it, so we have to too — without
+        # this, autodetect misses Chrome installs on systems that pin
+        # XDG_CONFIG_HOME elsewhere.
+        xdg_config = Path(os.environ.get("XDG_CONFIG_HOME") or (home / ".config"))
         chromium_family = {
-            "chrome": ".config/google-chrome",
-            "brave": ".config/BraveSoftware/Brave-Browser",
-            "chromium": ".config/chromium",
-            "edge": ".config/microsoft-edge",
-            "vivaldi": ".config/vivaldi",
+            "chrome": "google-chrome",
+            "brave": "BraveSoftware/Brave-Browser",
+            "chromium": "chromium",
+            "edge": "microsoft-edge",
+            "vivaldi": "vivaldi",
         }
         if name in chromium_family:
-            base = home / chromium_family[name] / "Default"
+            base = xdg_config / chromium_family[name] / "Default"
             return [base / "Network/Cookies", base / "Cookies"]
         roots = {
-            "opera": [home / ".config/opera/Cookies"],
+            "opera": [xdg_config / "opera/Cookies"],
             "firefox": [home / ".mozilla/firefox"],
         }
         return roots.get(name, [])

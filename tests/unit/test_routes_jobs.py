@@ -97,6 +97,19 @@ def test_post_jobs_sql_injection_attempt_does_not_execute(client: TestClient) ->
     assert any(j["url"] == sneaky for j in listed)
 
 
+def test_get_jobs_with_unknown_status_returns_422(client: TestClient) -> None:
+    r = client.get("/jobs?status=garbage")
+    assert r.status_code == 422
+    assert "unknown status" in r.json()["detail"]
+
+
+def test_get_jobs_with_valid_status_filter_works(client: TestClient) -> None:
+    client.post("/jobs", json={"url": "https://a.com/1"})
+    r = client.get("/jobs?status=pending")
+    assert r.status_code == 200
+    assert len(r.json()["jobs"]) == 1
+
+
 def test_static_ui_served_when_present(tmp_path: Path) -> None:
     # Stage a fake built UI in the package's `web/` dir.
     import ytdl.api as api_pkg

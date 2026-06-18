@@ -33,6 +33,7 @@ from ytdl.queue import (
     claim_one,
     enqueue,
     finish,
+    finish_if_status,
     get_job,
     list_jobs,
     promote_to_playlist,
@@ -257,32 +258,18 @@ class Supervisor:
         if job.parent_job_id is not None:
             terminal, done, failed = all_children_terminal(conn, job.parent_job_id)
             if terminal:
-                parent = get_job(conn, job.parent_job_id)
-                if parent is not None and parent.status == JobStatus.CANCELING:
-                    # User canceled the parent while children were running.
-                    # Honor the cancel rather than overwriting with DONE.
-                    finish(
-                        conn,
-                        job.parent_job_id,
-                        status=JobStatus.CANCELED,
-                        error="canceled",
-                    )
-                    self._bus.publish(
-                        {
-                            "event": "canceled",
-                            "job_id": job.parent_job_id,
-                            "done": done,
-                            "failed": failed,
-                        }
-                    )
-                else:
-                    finish(
-                        conn,
-                        job.parent_job_id,
-                        status=JobStatus.DONE,
-                        output_path=None,
-                        error=(f"{failed} child(ren) failed" if failed else None),
-                    )
+                # Try DONE only if the parent is still RUNNING. If it raced
+                # to CANCELING via a user DELETE, this CAS misses and we
+                # honor the cancel instead.
+                done_ok = finish_if_status(
+                    conn,
+                    job.parent_job_id,
+                    expected_status=JobStatus.RUNNING,
+                    new_status=JobStatus.DONE,
+                    output_path=None,
+                    error=(f"{failed} child(ren) failed" if failed else None),
+                )
+                if done_ok:
                     self._bus.publish(
                         {
                             "event": "finished",
@@ -291,6 +278,27 @@ class Supervisor:
                             "failed": failed,
                         }
                     )
+                else:
+                    # Parent was canceled while children were finishing.
+                    # Finalize as CANCELED if it's still in CANCELING.
+                    if finish_if_status(
+                        conn,
+                        job.parent_job_id,
+                        expected_status=JobStatus.CANCELING,
+                        new_status=JobStatus.CANCELED,
+                        output_path=None,
+                        error="canceled",
+                    ):
+                        self._bus.publish(
+                            {
+                                "event": "canceled",
+                                "job_id": job.parent_job_id,
+                                "done": done,
+                                "failed": failed,
+                            }
+                        )
+                    # If neither CAS hit, another worker already finalized
+                    # the parent — nothing to do.
 
     async def _download_video(self, conn, job) -> None:
         loop = asyncio.get_running_loop()

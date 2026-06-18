@@ -102,4 +102,15 @@ describe("JobRow", () => {
     });
     expect(onRetry).toHaveBeenCalledWith(baseJob.id);
   });
+
+  it("renders Retry button for done jobs", () => {
+    render(
+      <JobRow
+        job={{ ...baseJob, status: "done", output_path: "/o/x.mp4" }}
+        onCancel={() => {}}
+        onRetry={() => {}}
+      />
+    );
+    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
+  });
 });

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,7 @@ import pytest
 from ytdl.db import connect, migrate
 from ytdl.events_bus import EventsBus
 from ytdl.models import JobKind, JobStatus
+from ytdl.queue import cancel as cancel_job
 from ytdl.queue import enqueue, get_job
 from ytdl.workers import Supervisor
 
@@ -146,3 +148,57 @@ async def test_supervisor_marks_auth_error_as_failed_without_retry(tmp_path: Pat
     assert job.status == JobStatus.FAILED
     assert job.error and "age" in job.error.lower()
     assert fake.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_supervisor_observes_cancel_during_retry_backoff(tmp_path: Path) -> None:
+    db = tmp_path / "t.db"
+    conn = connect(db)
+    migrate(conn)
+    job_id = enqueue(
+        conn,
+        url="u",
+        kind=JobKind.VIDEO,
+        format_pref="best",
+        output_dir=str(tmp_path),
+    )
+    conn.close()
+
+    attempt_count = 0
+    saw_first_call = asyncio.Event()
+    loop = asyncio.get_event_loop()
+
+    def fake_download(job, ctx):
+        nonlocal attempt_count
+        attempt_count += 1
+        loop.call_soon_threadsafe(saw_first_call.set)
+        raise RuntimeError("HTTP Error 503 transient")  # forces retry
+
+    bus = EventsBus()
+    sup = Supervisor(
+        db_path=db,
+        workers=1,
+        bus=bus,
+        downloader=fake_download,
+        probe=lambda url: {"_type": "video"},
+        cookies_browser=None,
+        retry_delays_s=(5, 5),  # long enough to observe cancel
+        rate_limit_delay_s=0,
+    )
+    await sup.start()
+    try:
+        await asyncio.wait_for(saw_first_call.wait(), timeout=2.0)
+        # Job is now in retry sleep; cancel it.
+        conn = connect(db)
+        cancel_job(conn, job_id)
+        conn.close()
+        await sup.wait_idle(timeout=3.0)
+    finally:
+        await sup.stop()
+
+    conn = connect(db)
+    job = get_job(conn, job_id)
+    conn.close()
+    assert job is not None
+    assert job.status == JobStatus.CANCELED
+    assert attempt_count == 1, "worker should not have attempted a second download after cancel"

@@ -171,4 +171,30 @@ describe("App preview on paste", () => {
     ).toBe(0);
     expect(screen.getByText(/Could not preview/)).toBeInTheDocument();
   });
+
+  it("clears the previous preview's Download button immediately when a new URL is typed", async () => {
+    render(<App />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    const input = screen.getByPlaceholderText(/Paste a YouTube URL/i);
+    // First URL — let the preview render fully.
+    fireEvent.change(input, { target: { value: "https://yt/first" } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(600);
+      await Promise.resolve();
+    });
+    // Download button is now visible for the first preview.
+    expect(screen.getByRole("button", { name: /^Download$/ })).toBeInTheDocument();
+
+    // User retypes — synchronously, before the new debounce fires.
+    fireEvent.change(input, { target: { value: "https://yt/second" } });
+    // The old preview (and its Download button) must already be gone.
+    expect(
+      screen.queryByRole("button", { name: /^Download$/ }),
+    ).not.toBeInTheDocument();
+    // We should be in the loading state right away.
+    expect(screen.getByText(/Fetching preview/i)).toBeInTheDocument();
+  });
 });

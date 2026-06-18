@@ -204,6 +204,56 @@ def test_cancel_with_children_cascades_to_pending_and_running(tmp_path: Path) ->
     assert statuses[child_done] == JobStatus.DONE.value
 
 
+def test_cancel_with_children_finalizes_parent_when_no_running_kids(tmp_path: Path) -> None:
+    """A playlist with all-PENDING children gets canceled before any worker
+    starts. Parent should land CANCELED (not stuck CANCELING) because no
+    reaper will ever fire."""
+    conn = _setup(tmp_path)
+    parent = enqueue(conn, url="p", kind=JobKind.VIDEO, format_pref="best", output_dir="/o")
+    promote_to_playlist(conn, parent, title="P")
+    conn.execute("UPDATE jobs SET status='running' WHERE id=?", (parent,))
+    for i in range(3):
+        enqueue(
+            conn,
+            url=f"c{i}",
+            kind=JobKind.VIDEO,
+            format_pref="best",
+            output_dir="/o",
+            parent_job_id=parent,
+        )
+    # All children are PENDING.
+    assert cancel_with_children(conn, parent) is True
+    parent_row = conn.execute("SELECT status FROM jobs WHERE id=?", (parent,)).fetchone()
+    assert parent_row["status"] == JobStatus.CANCELED.value, (
+        f"parent should be CANCELED when cascade leaves no running children, "
+        f"got {parent_row['status']}"
+    )
+
+
+def test_cancel_with_children_keeps_parent_canceling_when_kids_still_running(
+    tmp_path: Path,
+) -> None:
+    """When the cascade leaves CANCELING children behind, those workers will
+    eventually fire the reaper. The parent stays CANCELING until then."""
+    conn = _setup(tmp_path)
+    parent = enqueue(conn, url="p", kind=JobKind.VIDEO, format_pref="best", output_dir="/o")
+    promote_to_playlist(conn, parent, title="P")
+    conn.execute("UPDATE jobs SET status='running' WHERE id=?", (parent,))
+    running_child = enqueue(
+        conn,
+        url="rc",
+        kind=JobKind.VIDEO,
+        format_pref="best",
+        output_dir="/o",
+        parent_job_id=parent,
+    )
+    conn.execute("UPDATE jobs SET status='running' WHERE id=?", (running_child,))
+    assert cancel_with_children(conn, parent) is True
+    parent_row = conn.execute("SELECT status FROM jobs WHERE id=?", (parent,)).fetchone()
+    # Still CANCELING — the running child must abort before we finalize.
+    assert parent_row["status"] == JobStatus.CANCELING.value
+
+
 def test_cancel_with_children_atomic_parent_first(tmp_path: Path) -> None:
     """The cascade transitions the parent before the children, so a reaper
     racing during the cancel sees the parent's CANCELING state."""

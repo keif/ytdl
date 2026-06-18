@@ -76,7 +76,11 @@ async def test_post_then_bus_then_finished(
     monkeypatch.setattr(
         wm, "_default_download_adapter", lambda job, ctx: fake_download(job, ctx)
     )
-    monkeypatch.setattr(wm, "_default_probe_adapter", lambda url: {"_type": "video"})
+    monkeypatch.setattr(
+        wm,
+        "_default_probe_adapter",
+        lambda url, *, cookies_browser=None: {"_type": "video"},
+    )
 
     app = build_app(_config(tmp_path))
 

@@ -150,3 +150,22 @@ def test_sanitize_truncates_long_titles() -> None:
 
 def test_sanitize_strips_null_bytes() -> None:
     assert _sanitize_path_component("a\x00b") == "ab"
+
+
+def test_default_probe_adapter_forwards_cookies(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The supervisor's default probe path must pass the configured browser to yt-dlp."""
+    captured: dict = {}
+
+    def fake_probe(url: str, *, cookies_browser: str | None = None) -> dict:
+        captured["url"] = url
+        captured["cookies_browser"] = cookies_browser
+        return {"_type": "video"}
+
+    import ytdl.downloader
+
+    monkeypatch.setattr(ytdl.downloader, "probe", fake_probe)
+
+    from ytdl.workers import _default_probe_adapter
+
+    _default_probe_adapter("https://yt/x", cookies_browser="chrome")
+    assert captured == {"url": "https://yt/x", "cookies_browser": "chrome"}

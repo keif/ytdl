@@ -1,0 +1,50 @@
+version: 2
+updates:
+  # ── Python: backend deps via pyproject.toml ──────────────────────────────
+  # Dependabot reads PEP 621 metadata under [project.dependencies]. The uv
+  # lockfile (uv.lock) is NOT updated by Dependabot directly; after merging a
+  # Dependabot PR, run `uv sync` locally to refresh it.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      dev-dependencies:
+        dependency-type: "development"
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # ── npm: web frontend (Vite + React) ─────────────────────────────────────
+  - package-ecosystem: "npm"
+    directory: "/web"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      dev-dependencies:
+        dependency-type: "development"
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # ── Docker: self-host image (Node web-build + uv slim Python) ────────────
+  - package-ecosystem: "docker"
+    directory: "/docker"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
+  # ── GitHub Actions: pre-emptively configured for when workflows land ─────
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns:
+          - "*"

@@ -79,7 +79,15 @@ class Supervisor:
         self._bus = bus
         self._cookies = cookies_browser
         self._download: Downloader = downloader or _default_download_adapter
-        self._probe: Callable[[str], dict] = probe or _default_probe_adapter
+        if probe is not None:
+            self._probe: Callable[[str], dict] = probe
+        else:
+            _cookies = cookies_browser
+
+            def _adapter(url: str) -> dict:
+                return _default_probe_adapter(url, cookies_browser=_cookies)
+
+            self._probe = _adapter
         self._retry_delays = retry_delays_s
         self._rate_limit_delay = rate_limit_delay_s
         self._tasks: list[asyncio.Task] = []
@@ -360,8 +368,8 @@ def _default_download_adapter(job, ctx: DownloadContext) -> DownloadResult:
     return default_download(job, real_ctx)
 
 
-def _default_probe_adapter(url: str) -> dict:
+def _default_probe_adapter(url: str, *, cookies_browser: str | None = None) -> dict:
     """Lazy default that delegates to the downloader's probe helper."""
     from ytdl.downloader import probe as _probe
 
-    return _probe(url)
+    return _probe(url, cookies_browser=cookies_browser)

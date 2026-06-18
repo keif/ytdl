@@ -203,6 +203,26 @@ def test_cancel_with_children_cascades_to_pending_and_running(tmp_path: Path) ->
     assert statuses[child_done] == JobStatus.DONE.value
 
 
+def test_cancel_with_children_atomic_parent_first(tmp_path: Path) -> None:
+    """The cascade transitions the parent before the children, so a reaper
+    racing during the cancel sees the parent's CANCELING state."""
+    conn = _setup(tmp_path)
+    parent = enqueue(conn, url="p", kind=JobKind.VIDEO, format_pref="best", output_dir="/o")
+    child = enqueue(
+        conn,
+        url="c",
+        kind=JobKind.VIDEO,
+        format_pref="best",
+        output_dir="/o",
+        parent_job_id=parent,
+    )
+    conn.execute("UPDATE jobs SET status='running' WHERE id IN (?, ?)", (parent, child))
+
+    assert cancel_with_children(conn, parent) is True
+    row = conn.execute("SELECT status FROM jobs WHERE id=?", (parent,)).fetchone()
+    assert row["status"] == JobStatus.CANCELING.value
+
+
 def test_cancel_with_children_leaves_terminal_parent_alone(tmp_path: Path) -> None:
     conn = _setup(tmp_path)
     job_id = enqueue(

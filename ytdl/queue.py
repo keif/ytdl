@@ -527,6 +527,88 @@ def all_children_terminal(
     return all(r["status"] in terminal_set for r in rows), done, failed
 
 
+def _retained_parent_ids_sql() -> str:
+    """Return SQL snippet (no params) that yields the IDs of parents we must
+    KEEP because at least one of their children is not stale-DONE.
+
+    Must be called within the context of clear_done_jobs/count_clearable where
+    the ? placeholders are bound correctly.
+    """
+    return (
+        "SELECT DISTINCT parent_job_id FROM jobs "
+        "WHERE parent_job_id IS NOT NULL "
+        "AND (status != ? OR finished_at IS NULL OR finished_at >= ?)"
+    )
+
+
+def _clear_predicate_sql() -> str:
+    """Full WHERE predicate for the clear sweep.
+
+    A row is deletable when:
+      1. It's stale DONE itself, AND
+      2. It's not in the retained-parents set (a parent with any non-stale
+         child stays so the child set isn't orphaned), AND
+      3. If it has a parent, that parent is ALSO in the deletable set —
+         i.e., a child is only swept when its parent is going too. Otherwise
+         we'd orphan a child under a parent that's stuck RUNNING or whose
+         siblings are still live.
+
+    Bindings expected in order (8 total): for each of the four
+    (DONE, cutoff) placeholders below.
+    """
+    return f"""
+        status = ?
+        AND finished_at IS NOT NULL
+        AND finished_at < ?
+        AND id NOT IN ({_retained_parent_ids_sql()})
+        AND (
+            parent_job_id IS NULL
+            OR parent_job_id IN (
+                SELECT p.id FROM jobs p
+                WHERE p.status = ?
+                  AND p.finished_at IS NOT NULL
+                  AND p.finished_at < ?
+                  AND p.id NOT IN ({_retained_parent_ids_sql()})
+            )
+        )
+    """
+
+
+def _clear_bindings(cutoff: int) -> tuple:
+    """Bindings for the four (DONE, cutoff) placeholders in the clear
+    predicate."""
+    done = JobStatus.DONE.value
+    return (done, cutoff, done, cutoff, done, cutoff, done, cutoff)
+
+
+def clear_done_jobs(conn: sqlite3.Connection, *, older_than_ms: int) -> int:
+    """Delete DONE jobs whose finished_at is older than the given ms threshold.
+
+    Returns the number of rows deleted. Failed and canceled jobs stay — the
+    user usually wants those visible for triage. Parent playlists are deleted
+    only when ALL of their children are also DONE-and-stale (we don't want to
+    orphan a still-running child). Children are only deleted when their
+    parent is ALSO being deleted in the same sweep — so a child under a
+    stuck-RUNNING parent stays put.
+    """
+    cutoff = _now_ms() - older_than_ms
+    cur = conn.execute(
+        f"DELETE FROM jobs WHERE {_clear_predicate_sql()}",
+        _clear_bindings(cutoff),
+    )
+    return cur.rowcount
+
+
+def count_clearable(conn: sqlite3.Connection, *, older_than_ms: int) -> int:
+    """How many DONE jobs WOULD `clear_done_jobs` delete? For UI preview."""
+    cutoff = _now_ms() - older_than_ms
+    row = conn.execute(
+        f"SELECT COUNT(*) AS n FROM jobs WHERE {_clear_predicate_sql()}",
+        _clear_bindings(cutoff),
+    ).fetchone()
+    return int(row["n"])
+
+
 def list_events_since(
     conn: sqlite3.Connection, since_id: int, limit: int = 1000
 ) -> list[Event]:

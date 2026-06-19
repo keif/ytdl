@@ -179,3 +179,42 @@ def test_queue_add_with_pick_only_enqueues_picked(
     conn.close()
     urls = {j.url for j in jobs}
     assert urls == {"https://x/a", "https://x/c", "https://x/d"}
+
+
+def test_cli_queue_clear_with_yes_flag_deletes(tmp_data_dir: Path) -> None:
+    import time as _t
+
+    from ytdl.config import load_config
+    from ytdl.db import connect, migrate
+    from ytdl.models import JobKind
+    from ytdl.queue import enqueue
+
+    cfg = load_config()
+    conn = connect(cfg.db_path)
+    migrate(conn)
+    job_id = enqueue(
+        conn, url="https://yt/x", kind=JobKind.VIDEO,
+        format_pref="best", output_dir="/o",
+    )
+    conn.execute(
+        "UPDATE jobs SET status='done', finished_at=? WHERE id=?",
+        (int(_t.time() * 1000) - 30 * 86_400_000, job_id),
+    )
+    conn.commit()
+    conn.close()
+
+    result = runner.invoke(app, ["queue", "clear", "--yes"])
+    assert result.exit_code == 0
+    assert "deleted 1" in result.output.lower()
+
+
+def test_cli_queue_clear_prints_nothing_to_clear(tmp_data_dir: Path) -> None:
+    result = runner.invoke(app, ["queue", "clear", "--yes"])
+    assert result.exit_code == 0
+    assert "nothing to clear" in result.output.lower()
+
+
+def test_cli_queue_clear_rejects_negative_days(tmp_data_dir: Path) -> None:
+    result = runner.invoke(app, ["queue", "clear", "--older-than-days", "-1", "--yes"])
+    assert result.exit_code == 2
+    assert "must be >= 0" in result.output

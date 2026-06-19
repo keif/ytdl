@@ -260,3 +260,32 @@ def test_static_ui_served_when_present(tmp_path: Path) -> None:
     finally:
         (web_dir / "index.html").unlink(missing_ok=True)
         # leave the dir; .gitignore excludes it
+
+
+def test_clear_preview_returns_zero_for_fresh_db(client: TestClient) -> None:
+    r = client.get("/jobs/clear/preview")
+    assert r.status_code == 200
+    assert r.json() == {"clearable": 0, "older_than_days": 7}
+
+
+def test_clear_endpoint_deletes_old_done(client: TestClient) -> None:
+    import time as _t
+
+    from ytdl.db import connect
+    db = client.app.state.config.db_path
+    job_id = client.post("/jobs", json={"url": "https://yt/x"}).json()["id"]
+    conn = connect(db)
+    conn.execute(
+        "UPDATE jobs SET status='done', finished_at=? WHERE id=?",
+        (int(_t.time() * 1000) - 30 * 86_400_000, job_id),
+    )
+    conn.commit()
+    conn.close()
+    r = client.post("/jobs/clear")
+    assert r.status_code == 200
+    assert r.json()["deleted"] == 1
+
+
+def test_clear_endpoint_rejects_negative_days(client: TestClient) -> None:
+    r = client.post("/jobs/clear?older_than_days=-1")
+    assert r.status_code == 422

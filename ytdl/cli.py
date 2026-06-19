@@ -340,6 +340,50 @@ def queue_retry(job_id: str) -> None:
     console.print(f"queued retry as [bold]{new_id}[/bold]")
 
 
+@queue_app.command("clear")
+def queue_clear(
+    older_than_days: int = typer.Option(
+        7, "--older-than-days", "-d",
+        help="Only clear DONE jobs older than this many days. Default: 7.",
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y",
+        help="Skip confirmation prompt.",
+    ),
+) -> None:
+    """Delete DONE jobs older than --older-than-days (default 7).
+
+    Failed and canceled jobs are kept so you can triage them.
+    """
+    if older_than_days < 0:
+        console.print("[red]--older-than-days must be >= 0[/red]")
+        raise typer.Exit(code=2)
+
+    from ytdl.queue import clear_done_jobs, count_clearable
+
+    cfg = load_config()
+    conn = connect(cfg.db_path)
+    migrate(conn)
+    older_than_ms = older_than_days * 86_400_000
+    n = count_clearable(conn, older_than_ms=older_than_ms)
+    if n == 0:
+        console.print("[dim]nothing to clear[/dim]")
+        conn.close()
+        return
+    if not yes:
+        console.print(
+            f"about to delete [bold]{n}[/bold] DONE jobs older than "
+            f"{older_than_days} days"
+        )
+        if not typer.confirm("continue?", default=False):
+            conn.close()
+            console.print("[dim]aborted[/dim]")
+            return
+    deleted = clear_done_jobs(conn, older_than_ms=older_than_ms)
+    conn.close()
+    console.print(f"deleted [bold]{deleted}[/bold] jobs")
+
+
 @cookies_app.command("status")
 def cookies_status() -> None:
     """Print the cookies browser that will be used at job time."""

@@ -367,7 +367,7 @@ def queue_clear(
     older_than_ms = older_than_days * 86_400_000
     n = count_clearable(conn, older_than_ms=older_than_ms)
     if n == 0:
-        console.print("[neutral]nothing to clear[/neutral]")
+        console.print("[dim]nothing to clear[/dim]")
         conn.close()
         return
     if not yes:
@@ -377,7 +377,7 @@ def queue_clear(
         )
         if not typer.confirm("continue?", default=False):
             conn.close()
-            console.print("[neutral]aborted[/neutral]")
+            console.print("[dim]aborted[/dim]")
             return
     deleted = clear_done_jobs(conn, older_than_ms=older_than_ms)
     conn.close()

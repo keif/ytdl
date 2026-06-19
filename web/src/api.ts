@@ -137,6 +137,21 @@ export async function enrichUrls(urls: string[]): Promise<EnrichResponse> {
   return r.json();
 }
 
+export interface ClearPreview { clearable: number; older_than_days: number; }
+export interface ClearResult { deleted: number; }
+
+export async function previewClear(olderThanDays = 7): Promise<ClearPreview> {
+  const r = await fetch(`/jobs/clear/preview?older_than_days=${olderThanDays}`);
+  if (!r.ok) throw new Error(`clear preview: ${r.status}`);
+  return r.json();
+}
+
+export async function clearDoneJobs(olderThanDays = 7): Promise<ClearResult> {
+  const r = await fetch(`/jobs/clear?older_than_days=${olderThanDays}`, { method: "POST" });
+  if (!r.ok) throw new Error(`clear: ${r.status}`);
+  return r.json();
+}
+
 export interface StatusResponse {
   cookies_browser: string | null;
   cookies_source: "explicit" | "autodetect" | "none";

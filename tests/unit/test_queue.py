@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from pathlib import Path
 
 from ytdl.db import connect, migrate
@@ -534,3 +535,82 @@ def test_claim_one_does_not_record_started_event(tmp_path: Path) -> None:
         (job_id,),
     ).fetchone()
     assert started["n"] == 0, "claim_one should not write the 'started' event"
+
+
+def test_clear_done_jobs_only_deletes_old_done(tmp_path: Path) -> None:
+    from ytdl.queue import clear_done_jobs, count_clearable
+    conn = _setup(tmp_path)
+    now = int(time.time() * 1000)
+    # Old DONE — should be deleted.
+    old_id = enqueue(conn, url="old", kind=JobKind.VIDEO, format_pref="best", output_dir="/o")
+    conn.execute(
+        "UPDATE jobs SET status='done', finished_at=? WHERE id=?",
+        (now - 30 * 86_400_000, old_id),
+    )
+    # Recent DONE — should stay.
+    recent_id = enqueue(conn, url="recent", kind=JobKind.VIDEO, format_pref="best", output_dir="/o")
+    conn.execute(
+        "UPDATE jobs SET status='done', finished_at=? WHERE id=?",
+        (now - 1 * 86_400_000, recent_id),
+    )
+    # Old FAILED — should stay (we don't delete failed jobs).
+    failed_id = enqueue(conn, url="failed", kind=JobKind.VIDEO, format_pref="best", output_dir="/o")
+    conn.execute(
+        "UPDATE jobs SET status='failed', finished_at=? WHERE id=?",
+        (now - 30 * 86_400_000, failed_id),
+    )
+
+    threshold = 7 * 86_400_000
+    assert count_clearable(conn, older_than_ms=threshold) == 1
+    deleted = clear_done_jobs(conn, older_than_ms=threshold)
+    assert deleted == 1
+    remaining = {r["id"] for r in conn.execute("SELECT id FROM jobs").fetchall()}
+    assert old_id not in remaining
+    assert recent_id in remaining
+    assert failed_id in remaining
+
+
+def test_clear_done_jobs_keeps_parent_with_live_children(tmp_path: Path) -> None:
+    """A DONE parent that still has a PENDING child must not be deleted —
+    deleting it would orphan the child (claim_one would skip the child)."""
+    from ytdl.queue import clear_done_jobs, promote_to_playlist
+    conn = _setup(tmp_path)
+    now = int(time.time() * 1000)
+    parent = enqueue(conn, url="p", kind=JobKind.VIDEO, format_pref="best", output_dir="/o")
+    promote_to_playlist(conn, parent, title="P")
+    conn.execute(
+        "UPDATE jobs SET status='done', finished_at=? WHERE id=?",
+        (now - 30 * 86_400_000, parent),
+    )
+    # Live (pending) child.
+    enqueue(
+        conn, url="c", kind=JobKind.VIDEO, format_pref="best",
+        output_dir="/o", parent_job_id=parent,
+    )
+    deleted = clear_done_jobs(conn, older_than_ms=7 * 86_400_000)
+    assert deleted == 0
+    remaining = {r["id"] for r in conn.execute("SELECT id FROM jobs").fetchall()}
+    assert parent in remaining
+
+
+def test_clear_done_jobs_deletes_parent_when_all_children_are_old_done(tmp_path: Path) -> None:
+    from ytdl.queue import clear_done_jobs, promote_to_playlist
+    conn = _setup(tmp_path)
+    now = int(time.time() * 1000)
+    parent = enqueue(conn, url="p", kind=JobKind.VIDEO, format_pref="best", output_dir="/o")
+    promote_to_playlist(conn, parent, title="P")
+    conn.execute(
+        "UPDATE jobs SET status='done', finished_at=? WHERE id=?",
+        (now - 30 * 86_400_000, parent),
+    )
+    child = enqueue(
+        conn, url="c", kind=JobKind.VIDEO, format_pref="best",
+        output_dir="/o", parent_job_id=parent,
+    )
+    conn.execute(
+        "UPDATE jobs SET status='done', finished_at=? WHERE id=?",
+        (now - 30 * 86_400_000, child),
+    )
+    deleted = clear_done_jobs(conn, older_than_ms=7 * 86_400_000)
+    # Both parent and child are stale DONE — both delete.
+    assert deleted == 2

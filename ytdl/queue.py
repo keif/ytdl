@@ -527,6 +527,20 @@ def all_children_terminal(
     return all(r["status"] in terminal_set for r in rows), done, failed
 
 
+def _retained_parent_ids_sql() -> str:
+    """Return SQL snippet (no params) that yields the IDs of parents we must
+    KEEP because at least one of their children is not stale-DONE.
+
+    Must be called within the context of clear_done_jobs/count_clearable where
+    the ? placeholders are bound correctly.
+    """
+    return (
+        "SELECT DISTINCT parent_job_id FROM jobs "
+        "WHERE parent_job_id IS NOT NULL "
+        "AND (status != ? OR finished_at IS NULL OR finished_at >= ?)"
+    )
+
+
 def clear_done_jobs(conn: sqlite3.Connection, *, older_than_ms: int) -> int:
     """Delete DONE jobs whose finished_at is older than the given ms threshold.
 
@@ -534,24 +548,28 @@ def clear_done_jobs(conn: sqlite3.Connection, *, older_than_ms: int) -> int:
     user usually wants those visible for triage. Parent playlists are deleted
     only when ALL of their children are also DONE-and-stale (we don't want to
     orphan a still-running child).
+
+    Also protects children whose parent is being retained: if a parent has any
+    non-stale children, both the parent and those children stay, preventing
+    orphaning and breaking all_children_terminal() math.
     """
     cutoff = _now_ms() - older_than_ms
-    # First identify parents whose children are NOT yet all DONE and stale.
-    # Those parents stay, even if they're individually old.
+    retained_parents = _retained_parent_ids_sql()
     cur = conn.execute(
-        """
+        f"""
         DELETE FROM jobs
         WHERE status = ?
           AND finished_at IS NOT NULL
           AND finished_at < ?
-          AND id NOT IN (
-              -- Don't delete a parent that still has non-stale children.
-              SELECT DISTINCT parent_job_id FROM jobs
-              WHERE parent_job_id IS NOT NULL
-                AND (status != ? OR finished_at IS NULL OR finished_at >= ?)
+          AND id NOT IN ({retained_parents})
+          AND (
+              parent_job_id IS NULL
+              OR parent_job_id NOT IN ({retained_parents})
           )
         """,
         (
+            JobStatus.DONE.value,
+            cutoff,
             JobStatus.DONE.value,
             cutoff,
             JobStatus.DONE.value,
@@ -564,19 +582,22 @@ def clear_done_jobs(conn: sqlite3.Connection, *, older_than_ms: int) -> int:
 def count_clearable(conn: sqlite3.Connection, *, older_than_ms: int) -> int:
     """How many DONE jobs WOULD `clear_done_jobs` delete? For UI preview."""
     cutoff = _now_ms() - older_than_ms
+    retained_parents = _retained_parent_ids_sql()
     row = conn.execute(
-        """
+        f"""
         SELECT COUNT(*) AS n FROM jobs
         WHERE status = ?
           AND finished_at IS NOT NULL
           AND finished_at < ?
-          AND id NOT IN (
-              SELECT DISTINCT parent_job_id FROM jobs
-              WHERE parent_job_id IS NOT NULL
-                AND (status != ? OR finished_at IS NULL OR finished_at >= ?)
+          AND id NOT IN ({retained_parents})
+          AND (
+              parent_job_id IS NULL
+              OR parent_job_id NOT IN ({retained_parents})
           )
         """,
         (
+            JobStatus.DONE.value,
+            cutoff,
             JobStatus.DONE.value,
             cutoff,
             JobStatus.DONE.value,

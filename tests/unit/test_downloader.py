@@ -252,6 +252,25 @@ def test_build_ydl_options_sets_noplaylist(tmp_path: Path) -> None:
     assert opts["noplaylist"] is True
 
 
+def test_build_ydl_options_enables_ejs_remote_components(tmp_path: Path) -> None:
+    """yt-dlp 2026.x ships EJS challenge solvers as opt-in remote components.
+
+    Without enabling them, YouTube's n-challenge fails and `Requested format
+    is not available` cascades down. We must request the ejs:github source.
+    """
+    from ytdl.downloader import _build_ydl_options
+
+    job = _make_job(tmp_path)
+    ctx = DownloadContext(
+        ydl_cls=None,
+        cookies_browser=None,
+        on_progress=lambda d: None,
+        cancel_flag=lambda: False,
+    )
+    opts = _build_ydl_options(job, ctx, ProgressThrottle())
+    assert opts.get("remote_components") == ["ejs:github"]
+
+
 def test_download_aborts_when_cancel_flag_set(tmp_path: Path) -> None:
     from ytdl.downloader import DownloadCancelled
 

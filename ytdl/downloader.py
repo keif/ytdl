@@ -169,6 +169,11 @@ def _build_ydl_options(job, ctx: DownloadContext, throttle: ProgressThrottle) ->
         # Treat ?v=X&list=Y as a single video with playlist context, not the
         # playlist itself. Pure playlist URLs (no ?v=) are unaffected.
         "noplaylist": True,
+        # yt-dlp 2026.x ships challenge solver scripts (EJS) as opt-in remote
+        # components. Without this, YouTube's n-challenge fails and no
+        # video formats are returned ("Requested format is not available").
+        # See https://github.com/yt-dlp/yt-dlp/wiki/EJS.
+        "remote_components": ["ejs:github"],
     }
     if ctx.cookies_browser:
         opts["cookiesfrombrowser"] = (ctx.cookies_browser,)
@@ -193,6 +198,7 @@ def probe(url: str, *, cookies_browser: str | None = None) -> dict:
         "extract_flat": "in_playlist",
         "skip_download": True,
         "noplaylist": True,
+        "remote_components": ["ejs:github"],
     }
     if cookies_browser:
         opts["cookiesfrombrowser"] = (cookies_browser,)
@@ -212,6 +218,7 @@ def probe_one(url: str, *, cookies_browser: str | None = None) -> dict:
         "quiet": True,
         "skip_download": True,
         "noplaylist": True,
+        "remote_components": ["ejs:github"],
     }
     if cookies_browser:
         opts["cookiesfrombrowser"] = (cookies_browser,)

@@ -647,3 +647,41 @@ def test_clear_done_jobs_does_not_orphan_child_of_retained_parent(tmp_path: Path
     remaining = {r["id"] for r in conn.execute("SELECT id FROM jobs").fetchall()}
     assert stale_done_child in remaining
     assert parent in remaining
+
+
+def test_clear_done_jobs_keeps_children_of_non_done_parent(tmp_path: Path) -> None:
+    """A child should not be deleted when its parent is itself non-deletable
+    because it isn't DONE — even if all the children are old DONE rows.
+
+    Regression: an interrupted worker can leave a parent stuck RUNNING or
+    CANCELING. We must not sweep its DONE children out from under it; that
+    leaves the parent with no children at all and breaks
+    `all_children_terminal()`.
+    """
+    from ytdl.queue import clear_done_jobs, promote_to_playlist
+    conn = _setup(tmp_path)
+    now = int(time.time() * 1000)
+
+    parent = enqueue(conn, url="p", kind=JobKind.VIDEO, format_pref="best", output_dir="/o")
+    promote_to_playlist(conn, parent, title="P")
+    # Stuck RUNNING — not DONE, so not deletable.
+    conn.execute("UPDATE jobs SET status='running' WHERE id=?", (parent,))
+
+    # All children are stale DONE — would naively look "swept" since there's
+    # no non-stale sibling, but the parent isn't going anywhere.
+    for url in ("c1", "c2", "c3"):
+        cid = enqueue(
+            conn, url=url, kind=JobKind.VIDEO, format_pref="best",
+            output_dir="/o", parent_job_id=parent,
+        )
+        conn.execute(
+            "UPDATE jobs SET status='done', finished_at=? WHERE id=?",
+            (now - 30 * 86_400_000, cid),
+        )
+
+    deleted = clear_done_jobs(conn, older_than_ms=7 * 86_400_000)
+    assert deleted == 0, "must not delete children when parent isn't going too"
+    rows = conn.execute(
+        "SELECT COUNT(*) AS n FROM jobs WHERE parent_job_id=?", (parent,)
+    ).fetchone()
+    assert rows["n"] == 3

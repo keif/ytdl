@@ -355,6 +355,10 @@ def queue_clear(
 
     Failed and canceled jobs are kept so you can triage them.
     """
+    if older_than_days < 0:
+        console.print("[red]--older-than-days must be >= 0[/red]")
+        raise typer.Exit(code=2)
+
     from ytdl.queue import clear_done_jobs, count_clearable
 
     cfg = load_config()

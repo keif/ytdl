@@ -614,3 +614,36 @@ def test_clear_done_jobs_deletes_parent_when_all_children_are_old_done(tmp_path:
     deleted = clear_done_jobs(conn, older_than_ms=7 * 86_400_000)
     # Both parent and child are stale DONE — both delete.
     assert deleted == 2
+
+
+def test_clear_done_jobs_does_not_orphan_child_of_retained_parent(tmp_path: Path) -> None:
+    """A stale DONE child must stay if its parent is being retained — otherwise
+    `all_children_terminal()` sees an inconsistent child set."""
+    from ytdl.queue import clear_done_jobs, promote_to_playlist
+    conn = _setup(tmp_path)
+    now = int(time.time() * 1000)
+
+    parent = enqueue(conn, url="p", kind=JobKind.VIDEO, format_pref="best", output_dir="/o")
+    promote_to_playlist(conn, parent, title="P")
+    # Parent left RUNNING — definitely retained.
+    conn.execute("UPDATE jobs SET status='running' WHERE id=?", (parent,))
+
+    stale_done_child = enqueue(
+        conn, url="c1", kind=JobKind.VIDEO, format_pref="best",
+        output_dir="/o", parent_job_id=parent,
+    )
+    conn.execute(
+        "UPDATE jobs SET status='done', finished_at=? WHERE id=?",
+        (now - 30 * 86_400_000, stale_done_child),
+    )
+    # Sibling still pending — makes the parent unambiguously retained.
+    enqueue(
+        conn, url="c2", kind=JobKind.VIDEO, format_pref="best",
+        output_dir="/o", parent_job_id=parent,
+    )
+
+    deleted = clear_done_jobs(conn, older_than_ms=7 * 86_400_000)
+    assert deleted == 0, "must not orphan a child of a retained parent"
+    remaining = {r["id"] for r in conn.execute("SELECT id FROM jobs").fetchall()}
+    assert stale_done_child in remaining
+    assert parent in remaining

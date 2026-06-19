@@ -212,3 +212,9 @@ def test_cli_queue_clear_prints_nothing_to_clear(tmp_data_dir: Path) -> None:
     result = runner.invoke(app, ["queue", "clear", "--yes"])
     assert result.exit_code == 0
     assert "nothing to clear" in result.output.lower()
+
+
+def test_cli_queue_clear_rejects_negative_days(tmp_data_dir: Path) -> None:
+    result = runner.invoke(app, ["queue", "clear", "--older-than-days", "-1", "--yes"])
+    assert result.exit_code == 2
+    assert "must be >= 0" in result.output

@@ -65,3 +65,30 @@ def test_malformed_workers_env_raises_with_clear_message(
     monkeypatch.setenv("YTDL_WORKERS", "abc")
     with pytest.raises(ValueError, match="YTDL_WORKERS"):
         load_config()
+
+
+def test_load_config_sets_cookies_source_explicit_when_toml_provided(
+    tmp_data_dir: Path,
+) -> None:
+    cfg_path = tmp_data_dir / "config" / "ytdl" / "config.toml"
+    cfg_path.parent.mkdir(parents=True)
+    cfg_path.write_text('cookies_browser = "firefox"\n')
+    cfg = load_config()
+    assert cfg.cookies_browser == "firefox"
+    assert cfg.cookies_source == "explicit"
+
+
+def test_load_config_sets_cookies_source_autodetect_or_none(
+    tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # No explicit config + tempdir HOME = either autodetect finds nothing
+    # (typical CI image) or somehow trips on a real browser dir under the
+    # tempdir (vanishingly unlikely). Either way the source must NOT be
+    # "explicit".
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_data_dir))
+    cfg = load_config()
+    assert cfg.cookies_source in ("autodetect", "none")
+    if cfg.cookies_browser is None:
+        assert cfg.cookies_source == "none"
+    else:
+        assert cfg.cookies_source == "autodetect"

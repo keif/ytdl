@@ -136,3 +136,14 @@ export async function enrichUrls(urls: string[]): Promise<EnrichResponse> {
   if (!r.ok) throw new Error(`enrich: ${r.status}`);
   return r.json();
 }
+
+export interface StatusResponse {
+  cookies_browser: string | null;
+  cookies_source: "explicit" | "autodetect" | "none";
+}
+
+export async function fetchStatus(): Promise<StatusResponse> {
+  const r = await fetch("/status");
+  if (!r.ok) throw new Error(`status: ${r.status}`);
+  return r.json();
+}

@@ -527,6 +527,65 @@ def all_children_terminal(
     return all(r["status"] in terminal_set for r in rows), done, failed
 
 
+def clear_done_jobs(conn: sqlite3.Connection, *, older_than_ms: int) -> int:
+    """Delete DONE jobs whose finished_at is older than the given ms threshold.
+
+    Returns the number of rows deleted. Failed and canceled jobs stay — the
+    user usually wants those visible for triage. Parent playlists are deleted
+    only when ALL of their children are also DONE-and-stale (we don't want to
+    orphan a still-running child).
+    """
+    cutoff = _now_ms() - older_than_ms
+    # First identify parents whose children are NOT yet all DONE and stale.
+    # Those parents stay, even if they're individually old.
+    cur = conn.execute(
+        """
+        DELETE FROM jobs
+        WHERE status = ?
+          AND finished_at IS NOT NULL
+          AND finished_at < ?
+          AND id NOT IN (
+              -- Don't delete a parent that still has non-stale children.
+              SELECT DISTINCT parent_job_id FROM jobs
+              WHERE parent_job_id IS NOT NULL
+                AND (status != ? OR finished_at IS NULL OR finished_at >= ?)
+          )
+        """,
+        (
+            JobStatus.DONE.value,
+            cutoff,
+            JobStatus.DONE.value,
+            cutoff,
+        ),
+    )
+    return cur.rowcount
+
+
+def count_clearable(conn: sqlite3.Connection, *, older_than_ms: int) -> int:
+    """How many DONE jobs WOULD `clear_done_jobs` delete? For UI preview."""
+    cutoff = _now_ms() - older_than_ms
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS n FROM jobs
+        WHERE status = ?
+          AND finished_at IS NOT NULL
+          AND finished_at < ?
+          AND id NOT IN (
+              SELECT DISTINCT parent_job_id FROM jobs
+              WHERE parent_job_id IS NOT NULL
+                AND (status != ? OR finished_at IS NULL OR finished_at >= ?)
+          )
+        """,
+        (
+            JobStatus.DONE.value,
+            cutoff,
+            JobStatus.DONE.value,
+            cutoff,
+        ),
+    ).fetchone()
+    return int(row["n"])
+
+
 def list_events_since(
     conn: sqlite3.Connection, since_id: int, limit: int = 1000
 ) -> list[Event]:

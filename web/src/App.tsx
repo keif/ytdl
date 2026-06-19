@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import {
   cancelJob,
+  clearDoneJobs,
   createJob,
   createJobsFromPick,
   enrichUrls,
   fetchStatus,
   listJobs,
+  previewClear,
   previewUrl,
   retryJob,
   type EnrichedEntry,
@@ -45,6 +47,7 @@ export default function App() {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [status, setStatus] = useState<StatusResponse | null>(null);
+  const [clearable, setClearable] = useState(0);
 
   const refreshDebounce = useRef<number | null>(null);
   const previewDebounce = useRef<number | null>(null);
@@ -55,13 +58,22 @@ export default function App() {
     setJobs(list.jobs);
   }
 
+  async function refreshAll() {
+    await Promise.all([
+      refresh(),
+      previewClear()
+        .then((r) => setClearable(r.clearable))
+        .catch(() => setClearable(0)),
+    ]);
+  }
+
   function scheduleRefresh() {
     if (refreshDebounce.current !== null) {
       window.clearTimeout(refreshDebounce.current);
     }
     refreshDebounce.current = window.setTimeout(() => {
       refreshDebounce.current = null;
-      refresh().catch(() => {});
+      refreshAll().catch(() => {});
     }, REFRESH_DEBOUNCE_MS);
   }
 
@@ -148,7 +160,7 @@ export default function App() {
 
   // ---- Initial refresh + SSE wiring ----
   useEffect(() => {
-    refresh().catch(() => {});
+    refreshAll().catch(() => {});
     return () => {
       if (refreshDebounce.current !== null) {
         window.clearTimeout(refreshDebounce.current);
@@ -177,7 +189,7 @@ export default function App() {
       setUrl("");
       setPreview({ kind: "idle" });
       setSingleEnriched(null);
-      await refresh();
+      await refreshAll();
     } catch (e) {
       setSubmitError(e instanceof Error ? e.message : "submit failed");
     } finally {
@@ -192,7 +204,7 @@ export default function App() {
       await createJobsFromPick(urls, format);
       setUrl("");
       setPreview({ kind: "idle" });
-      await refresh();
+      await refreshAll();
     } catch (e) {
       setSubmitError(e instanceof Error ? e.message : "submit failed");
     } finally {
@@ -274,15 +286,31 @@ export default function App() {
 
       {submitError && <p className="text-xs text-red-400">{submitError}</p>}
 
+      {clearable > 0 && (
+        <div className="flex justify-end">
+          <button
+            type="button"
+            className="text-xs text-neutral-400 hover:text-neutral-200 border border-neutral-800 rounded px-2 py-1"
+            onClick={async () => {
+              if (!window.confirm(`Delete ${clearable} done jobs older than 7 days?`)) return;
+              await clearDoneJobs();
+              await refreshAll();
+            }}
+          >
+            Clear {clearable} done job{clearable > 1 ? "s" : ""}
+          </button>
+        </div>
+      )}
+
       <JobList
         jobs={jobs}
         onCancel={async (id) => {
           await cancelJob(id);
-          await refresh();
+          await refreshAll();
         }}
         onRetry={async (id) => {
           await retryJob(id);
-          await refresh();
+          await refreshAll();
         }}
       />
     </div>

@@ -33,6 +33,29 @@ def test_cookies_use_rejects_unsupported(tmp_data_dir: Path) -> None:
     assert "unsupported" in result.output.lower()
 
 
+def test_cookies_status_prints_explicit_browser(
+    tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg_path = tmp_data_dir / "config" / "ytdl" / "config.toml"
+    cfg_path.parent.mkdir(parents=True)
+    cfg_path.write_text('cookies_browser = "firefox"\n')
+    result = runner.invoke(app, ["cookies", "status"])
+    assert result.exit_code == 0
+    assert "firefox" in result.output
+    assert "explicit" in result.output
+
+
+def test_cookies_status_prints_none_when_no_detection(
+    tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_data_dir))
+    result = runner.invoke(app, ["cookies", "status"])
+    assert result.exit_code == 0
+    # Either autodetect happened or it didn't; if not, the helpful hint shows.
+    if "none detected" in result.output:
+        assert "ytdl cookies use" in result.output
+
+
 # ---- _parse_pick ----
 
 

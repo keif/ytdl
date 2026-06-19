@@ -87,9 +87,12 @@ def _candidate_paths(browser: str) -> list[Path]:
         if name in chromium_family:
             base = xdg_config / chromium_family[name] / "Default"
             return [base / "Network/Cookies", base / "Cookies"]
+        # Firefox: check XDG layout first, then the legacy ~/.mozilla/firefox.
+        # Snap/Flatpak Firefox installs are intentionally not covered here —
+        # add them later if anyone hits them.
         roots = {
             "opera": [xdg_config / "opera/Cookies"],
-            "firefox": [home / ".mozilla/firefox"],
+            "firefox": [xdg_config / "mozilla/firefox", home / ".mozilla/firefox"],
         }
         return roots.get(name, [])
 

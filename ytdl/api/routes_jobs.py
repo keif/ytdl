@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request, Response
+from pydantic import BaseModel
 
 from ytdl.api.schemas import JobCreate, JobList, JobOut
 from ytdl.db import connect, migrate
@@ -8,6 +9,8 @@ from ytdl.models import Job, JobKind, JobStatus
 from ytdl.queue import (
     cancel_with_children,
     children_of,
+    clear_done_jobs,
+    count_clearable,
     enqueue,
     get_job,
     list_jobs,
@@ -127,6 +130,44 @@ def list_endpoint(
                 ) from exc
         jobs = list_jobs(conn, status=parsed_status, limit=limit, offset=offset)
         return JobList(jobs=[_to_out(j) for j in jobs], total=len(jobs))
+    finally:
+        conn.close()
+
+
+class ClearResponse(BaseModel):
+    deleted: int
+
+
+class ClearPreviewResponse(BaseModel):
+    clearable: int
+    older_than_days: int
+
+
+@router.get("/clear/preview", response_model=ClearPreviewResponse)
+def clear_preview(request: Request, older_than_days: int = 7) -> ClearPreviewResponse:
+    """How many DONE jobs are old enough to clear? Used by the UI to show
+    the button label like 'Clear N done jobs'."""
+    if older_than_days < 0:
+        raise HTTPException(status_code=422, detail="older_than_days must be >= 0")
+    older_than_ms = older_than_days * 86_400_000
+    conn = _conn(request)
+    try:
+        n = count_clearable(conn, older_than_ms=older_than_ms)
+        return ClearPreviewResponse(clearable=n, older_than_days=older_than_days)
+    finally:
+        conn.close()
+
+
+@router.post("/clear", response_model=ClearResponse)
+def clear_endpoint(request: Request, older_than_days: int = 7) -> ClearResponse:
+    """Delete DONE jobs older than `older_than_days` (default 7)."""
+    if older_than_days < 0:
+        raise HTTPException(status_code=422, detail="older_than_days must be >= 0")
+    older_than_ms = older_than_days * 86_400_000
+    conn = _conn(request)
+    try:
+        n = clear_done_jobs(conn, older_than_ms=older_than_ms)
+        return ClearResponse(deleted=n)
     finally:
         conn.close()
 

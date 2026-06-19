@@ -113,4 +113,27 @@ describe("JobRow", () => {
     );
     expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
   });
+
+  it("shows a relative timestamp for done jobs", () => {
+    const oneHourAgo = Date.now() - 60 * 60 * 1000;
+    render(
+      <JobRow
+        job={{ ...baseJob, status: "done", finished_at: oneHourAgo, output_path: "/x.mp4" }}
+        onCancel={() => {}}
+        onRetry={() => {}}
+      />
+    );
+    expect(screen.getByText(/finished 1h ago/i)).toBeInTheDocument();
+  });
+
+  it("shows attempt count when greater than 1", () => {
+    render(
+      <JobRow
+        job={{ ...baseJob, status: "failed", attempts: 3, finished_at: Date.now() - 5000 }}
+        onCancel={() => {}}
+        onRetry={() => {}}
+      />
+    );
+    expect(screen.getByText(/3 attempts/i)).toBeInTheDocument();
+  });
 });

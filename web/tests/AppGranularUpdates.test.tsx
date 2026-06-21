@@ -315,4 +315,81 @@ describe("App granular SSE updates", () => {
     expect(screen.getByText(/finished/i)).toBeInTheDocument();
     expect(screen.queryByText(/RUNNING/i)).not.toBeInTheDocument();
   });
+
+  it("drops a stale full /jobs refresh that resolves after a lifecycle fetch", async () => {
+    // The race: snapshot/expanded triggers refresh() → slow /jobs is in
+    // flight; meanwhile a lifecycle event fetches /jobs/{id} and applies
+    // newer state. The slow /jobs response must NOT clobber the row.
+    let resolveSnapshotRefresh: (value: Response) => void = () => {};
+    let initialJobsDone = false;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      if (url === "/jobs" || url.startsWith("/jobs?")) {
+        jobsCallCount++;
+        if (!initialJobsDone) {
+          initialJobsDone = true;
+          return jobsListResponse([singleJob()]);
+        }
+        // Subsequent /jobs (the snapshot-triggered refresh): hold open
+        // until we explicitly resolve it AFTER the lifecycle fetch lands.
+        return new Promise<Response>((resolve) => {
+          resolveSnapshotRefresh = resolve;
+        });
+      }
+      if (url === "/status") return statusResponse();
+      if (url.startsWith("/jobs/clear/preview")) {
+        return new Response(
+          JSON.stringify({ clearable: 0, older_than_days: 7 }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url.match(/^\/jobs\/[^/]+$/)) {
+        getJobCallCount++;
+        return new Response(
+          JSON.stringify(
+            singleJob({ status: "done", finished_at: Date.now() }),
+          ),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByText("My Video")).toBeInTheDocument());
+    const es = esInstances[0];
+
+    // Snapshot → starts the slow full refresh.
+    act(() => {
+      es.onmessage?.({
+        data: JSON.stringify({ event: "snapshot", jobs: [] }),
+      } as MessageEvent);
+    });
+    await waitFor(() => expect(jobsCallCount).toBe(2));
+
+    // Lifecycle event → fetches and patches the row to "done" while the
+    // snapshot's full refresh is still pending.
+    act(() => {
+      es.onmessage?.({
+        data: JSON.stringify({ event: "finished", job_id: "abc" }),
+      } as MessageEvent);
+    });
+    await waitFor(() => expect(screen.getByText(/finished/i)).toBeInTheDocument());
+
+    // Now resolve the stale full refresh with the OLD running state.
+    await act(async () => {
+      resolveSnapshotRefresh(jobsListResponse([singleJob({ status: "running" })]));
+      await Promise.resolve();
+    });
+
+    // Row should still show "finished" — the stale full refresh was
+    // invalidated by the lifecycle write.
+    expect(screen.getByText(/finished/i)).toBeInTheDocument();
+    expect(screen.queryByText(/RUNNING/i)).not.toBeInTheDocument();
+  });
 });

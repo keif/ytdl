@@ -80,8 +80,22 @@ export default function App() {
   // would otherwise overwrite the row with stale data.
   const lifecycleGen = useRef<Map<string, number>>(new Map());
 
+  // Monotonic counter for full-list refreshes. Increments before each
+  // /jobs fetch; the response only replaces state if the counter still
+  // matches at resolution. Closes the race where a slow snapshot/expanded
+  // refresh resolves AFTER a newer lifecycle fetch has already patched a
+  // row with current state — without this guard, the stale full-list
+  // response would clobber it.
+  const refreshGen = useRef(0);
+
   async function refresh() {
+    const gen = refreshGen.current + 1;
+    refreshGen.current = gen;
     const list = await listJobs();
+    if (refreshGen.current !== gen) {
+      // A newer refresh started while we were waiting. Drop this result.
+      return;
+    }
     setJobs(list.jobs);
   }
 
@@ -247,6 +261,10 @@ export default function App() {
             // already landed). Drop this response — it's stale.
             return;
           }
+          // Invalidate any concurrent full /jobs refresh so its older
+          // snapshot of this row doesn't overwrite the value we're
+          // about to write here.
+          refreshGen.current += 1;
           setJobs((prev) => {
             const idx = prev.findIndex((j) => j.id === updated.id);
             if (idx === -1) return [updated, ...prev];

@@ -484,4 +484,83 @@ describe("App granular SSE updates", () => {
     const runningPills = screen.getAllByText(/running/i);
     expect(runningPills).toHaveLength(2);
   });
+
+  it("keeps a lifecycle-inserted row that's missing from a stale refresh", async () => {
+    // A lifecycle event INSERTS a new row (the job wasn't in the
+    // initial /jobs listing — common when another client enqueued it,
+    // or after a queue clear that wiped the row before this tab
+    // resync'd). If the stale /jobs response from a concurrent
+    // snapshot/expanded refresh doesn't include that row, the merge
+    // must still preserve it.
+    let resolveStaleRefresh: (value: Response) => void = () => {};
+    let initialJobsDone = false;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      if (url === "/jobs" || url.startsWith("/jobs?")) {
+        jobsCallCount++;
+        if (!initialJobsDone) {
+          initialJobsDone = true;
+          return jobsListResponse([singleJob({ id: "existing", title: "Existing" })]);
+        }
+        return new Promise<Response>((resolve) => {
+          resolveStaleRefresh = resolve;
+        });
+      }
+      if (url === "/status") return statusResponse();
+      if (url.startsWith("/jobs/clear/preview")) {
+        return new Response(
+          JSON.stringify({ clearable: 0, older_than_days: 7 }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url.match(/^\/jobs\/[^/]+$/)) {
+        getJobCallCount++;
+        return new Response(
+          JSON.stringify(singleJob({ id: "freshly-inserted", title: "Fresh Row" })),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByText("Existing")).toBeInTheDocument());
+    const es = esInstances[0];
+
+    // Snapshot → starts a slow refresh.
+    act(() => {
+      es.onmessage?.({
+        data: JSON.stringify({ event: "snapshot", jobs: [] }),
+      } as MessageEvent);
+    });
+    await waitFor(() => expect(jobsCallCount).toBe(2));
+
+    // Lifecycle event for a job that wasn't in the original /jobs
+    // listing — the handler will fetch and INSERT it.
+    act(() => {
+      es.onmessage?.({
+        data: JSON.stringify({ event: "started", job_id: "freshly-inserted" }),
+      } as MessageEvent);
+    });
+    await waitFor(() => expect(screen.getByText("Fresh Row")).toBeInTheDocument());
+
+    // Now resolve the stale refresh with a response that does NOT
+    // include the freshly-inserted row.
+    await act(async () => {
+      resolveStaleRefresh(
+        jobsListResponse([singleJob({ id: "existing", title: "Existing" })]),
+      );
+      await Promise.resolve();
+    });
+
+    // Fresh row stays visible — the merge preserved it because its
+    // lifecycle gen had incremented during the refresh.
+    expect(screen.getByText("Fresh Row")).toBeInTheDocument();
+    expect(screen.getByText("Existing")).toBeInTheDocument();
+  });
 });

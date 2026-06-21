@@ -92,12 +92,12 @@ export default function App() {
     const before = snapshotLifecycleGens();
     const list = await listJobs();
     setJobs((prev) => {
-      // Rows whose lifecycle generation incremented during the refresh
-      // got patched with fresher data than this /jobs response contains.
-      // Keep the in-state version of those rows; take the rest from the
-      // refresh.
       const prevById = new Map(prev.map((j) => [j.id, j]));
-      return list.jobs.map((row) => {
+      const refreshIds = new Set(list.jobs.map((j) => j.id));
+
+      // 1. Walk the refresh payload, preferring in-state rows whose
+      //    lifecycle generation incremented during the refresh.
+      const merged = list.jobs.map((row) => {
         const beforeGen = before.get(row.id) ?? 0;
         const nowGen = lifecycleGen.current.get(row.id) ?? 0;
         if (nowGen > beforeGen) {
@@ -106,6 +106,21 @@ export default function App() {
         }
         return row;
       });
+
+      // 2. Carry over any in-state rows that the refresh response is
+      //    MISSING — but only if their lifecycle generation incremented
+      //    during the refresh. Otherwise the row was legitimately
+      //    deleted server-side (e.g., queue clear) and shouldn't be
+      //    resurrected. Inserted at the top to match the lifecycle
+      //    handler's prepend behavior.
+      for (const live of prev) {
+        if (refreshIds.has(live.id)) continue;
+        const beforeGen = before.get(live.id) ?? 0;
+        const nowGen = lifecycleGen.current.get(live.id) ?? 0;
+        if (nowGen > beforeGen) merged.unshift(live);
+      }
+
+      return merged;
     });
   }
 

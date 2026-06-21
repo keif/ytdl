@@ -69,11 +69,22 @@ def build_app(config: Config) -> FastAPI:
 
     @app.get("/status", tags=["status"])
     def status() -> dict:
-        """Return runtime cookies status for the web UI header chip."""
+        """Return runtime status for the web UI header chips.
+
+        Cookies + presence of host binaries (deno for YouTube's JS challenge,
+        ffmpeg for stream merging). The UI renders these so the user can fix
+        a missing dep before they hit a confusing [forbidden] error.
+        """
+        from ytdl.runtime import probe_deno, probe_ffmpeg
+
         cfg: Config = app.state.config
+        deno = probe_deno()
+        ffmpeg = probe_ffmpeg()
         return {
             "cookies_browser": cfg.cookies_browser,
             "cookies_source": cfg.cookies_source,
+            "deno": {"present": deno.present, "path": deno.path},
+            "ffmpeg": {"present": ffmpeg.present, "path": ffmpeg.path},
         }
 
     # Serve the built Vite bundle when present. The Dockerfile copies the

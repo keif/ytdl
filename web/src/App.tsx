@@ -230,19 +230,48 @@ export default function App() {
           <h1 className="text-2xl font-semibold">ytdl</h1>
           <p className="text-sm text-neutral-400">Self-hosted yt-dlp queue</p>
         </div>
-        <span className="text-xs text-neutral-500">
+        <div className="text-xs text-neutral-500 flex items-center gap-2 flex-wrap justify-end">
           {status && (
             <>
-              {status.cookies_browser
-                ? `cookies: ${status.cookies_browser}${
-                    status.cookies_source === "autodetect" ? " (auto)" : ""
-                  }`
-                : "cookies: none"}
-              {" · "}
+              <span
+                title={
+                  status.cookies_source === "autodetect"
+                    ? "browser auto-detected at startup"
+                    : status.cookies_source === "explicit"
+                      ? "from YTDL_COOKIES_BROWSER / config.toml"
+                      : "no browser cookie store found"
+                }
+              >
+                {status.cookies_browser
+                  ? `cookies: ${status.cookies_browser}${
+                      status.cookies_source === "autodetect" ? " (auto)" : ""
+                    }`
+                  : "cookies: none"}
+              </span>
+              <span
+                className={status.deno.present ? "" : "text-amber-400"}
+                title={
+                  status.deno.present
+                    ? `deno on PATH at ${status.deno.path}`
+                    : "deno not found — install for YouTube n-challenge support"
+                }
+              >
+                deno: {status.deno.present ? "✓" : "missing"}
+              </span>
+              <span
+                className={status.ffmpeg.present ? "" : "text-red-400"}
+                title={
+                  status.ffmpeg.present
+                    ? `ffmpeg on PATH at ${status.ffmpeg.path}`
+                    : "ffmpeg not found — separate audio+video streams can't be merged"
+                }
+              >
+                ffmpeg: {status.ffmpeg.present ? "✓" : "missing"}
+              </span>
             </>
           )}
-          {sseState}
-        </span>
+          <span>{sseState}</span>
+        </div>
       </header>
 
       <SubmitForm

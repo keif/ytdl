@@ -136,4 +136,104 @@ describe("JobRow", () => {
     );
     expect(screen.getByText(/3 attempts/i)).toBeInTheDocument();
   });
+
+  it("shows speed and ETA for running jobs when both fields are set", () => {
+    render(
+      <JobRow
+        job={{
+          ...baseJob,
+          status: "running",
+          speed_bps: 5_242_880, // 5 MB/s
+          eta_s: 125,            // 2m 05s
+          filesize_bytes: 1_000_000,
+          bytes_done: 500_000,
+        }}
+        onCancel={() => {}}
+        onRetry={() => {}}
+      />
+    );
+    expect(screen.getByText("5.0 MB/s")).toBeInTheDocument();
+    expect(screen.getByText("· ETA 2m 05s")).toBeInTheDocument();
+  });
+
+  it("shows only speed when ETA is missing", () => {
+    render(
+      <JobRow
+        job={{
+          ...baseJob,
+          status: "running",
+          speed_bps: 512_000,    // 500 KB/s
+          eta_s: null,
+        }}
+        onCancel={() => {}}
+        onRetry={() => {}}
+      />
+    );
+    expect(screen.getByText("500.0 KB/s")).toBeInTheDocument();
+    expect(screen.queryByText(/ETA/i)).not.toBeInTheDocument();
+  });
+
+  it("does not render speed/ETA strip when neither value is present", () => {
+    render(
+      <JobRow
+        job={{ ...baseJob, status: "running", speed_bps: null, eta_s: null }}
+        onCancel={() => {}}
+        onRetry={() => {}}
+      />
+    );
+    expect(screen.queryByText(/MB\/s/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/ETA/i)).not.toBeInTheDocument();
+  });
+
+  it("shows ETA without a leading separator when speed is absent", () => {
+    render(
+      <JobRow
+        job={{
+          ...baseJob,
+          status: "running",
+          speed_bps: null,
+          eta_s: 45,
+        }}
+        onCancel={() => {}}
+        onRetry={() => {}}
+      />
+    );
+    expect(screen.getByText("ETA 45s")).toBeInTheDocument();
+    expect(screen.queryByText(/^· ETA/)).not.toBeInTheDocument();
+  });
+
+  it("renders zero values explicitly instead of dropping the strip", () => {
+    render(
+      <JobRow
+        job={{
+          ...baseJob,
+          status: "running",
+          speed_bps: 0,
+          eta_s: 0,
+        }}
+        onCancel={() => {}}
+        onRetry={() => {}}
+      />
+    );
+    expect(screen.getByText("0 B/s")).toBeInTheDocument();
+    expect(screen.getByText("· ETA 0s")).toBeInTheDocument();
+  });
+
+  it("does not render speed/ETA for non-running jobs", () => {
+    render(
+      <JobRow
+        job={{
+          ...baseJob,
+          status: "done",
+          speed_bps: 5_000_000,
+          eta_s: 60,
+          finished_at: Date.now() - 1000,
+        }}
+        onCancel={() => {}}
+        onRetry={() => {}}
+      />
+    );
+    expect(screen.queryByText(/MB\/s/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/ETA/i)).not.toBeInTheDocument();
+  });
 });

@@ -36,7 +36,29 @@ describe("App SSE refresh debounce", () => {
     };
 
     originalFetch = globalThis.fetch;
-    fetchSpy = vi.fn(async () => mockJobsListResponse([]));
+    // The /status mount-time fetch needs its real shape so App renders
+    // without crashing on the runtime-binary chips. Everything else
+    // (including /jobs) returns the empty list mock.
+    fetchSpy = vi.fn(async (input: RequestInfo | URL) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      if (url === "/status") {
+        return new Response(
+          JSON.stringify({
+            cookies_browser: "chrome",
+            cookies_source: "autodetect",
+            deno: { present: true, path: "/usr/bin/deno" },
+            ffmpeg: { present: true, path: "/usr/bin/ffmpeg" },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return mockJobsListResponse([]);
+    });
     globalThis.fetch = fetchSpy as unknown as typeof globalThis.fetch;
 
     vi.useFakeTimers();

@@ -152,9 +152,16 @@ export async function clearDoneJobs(olderThanDays = 7): Promise<ClearResult> {
   return r.json();
 }
 
+export interface BinaryStatus {
+  present: boolean;
+  path: string | null;
+}
+
 export interface StatusResponse {
   cookies_browser: string | null;
   cookies_source: "explicit" | "autodetect" | "none";
+  deno: BinaryStatus;
+  ffmpeg: BinaryStatus;
 }
 
 export async function fetchStatus(): Promise<StatusResponse> {

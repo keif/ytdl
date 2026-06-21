@@ -563,4 +563,78 @@ describe("App granular SSE updates", () => {
     expect(screen.getByText("Fresh Row")).toBeInTheDocument();
     expect(screen.getByText("Existing")).toBeInTheDocument();
   });
+
+  it("drops older full refreshes that resolve after newer ones", async () => {
+    // Two refresh-triggering events arrive close together (e.g.,
+    // snapshot then expanded). Both kick off /jobs fetches. If the
+    // EARLIER refresh resolves AFTER the LATER one, its older payload
+    // would wipe out the rows the newer refresh discovered.
+    let resolveFirstRefresh: (value: Response) => void = () => {};
+    let firstRefreshSeen = false;
+    let initialJobsDone = false;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      if (url === "/jobs" || url.startsWith("/jobs?")) {
+        jobsCallCount++;
+        if (!initialJobsDone) {
+          initialJobsDone = true;
+          return jobsListResponse([singleJob({ id: "existing", title: "Existing" })]);
+        }
+        if (!firstRefreshSeen) {
+          firstRefreshSeen = true;
+          // Hold this response — it will resolve LAST.
+          return new Promise<Response>((resolve) => {
+            resolveFirstRefresh = resolve;
+          });
+        }
+        // The second refresh returns immediately with the new state
+        // (existing + a freshly-discovered playlist child).
+        return jobsListResponse([
+          singleJob({ id: "existing", title: "Existing" }),
+          singleJob({ id: "child", title: "Discovered Child" }),
+        ]);
+      }
+      if (url === "/status") return statusResponse();
+      if (url.startsWith("/jobs/clear/preview")) {
+        return new Response(
+          JSON.stringify({ clearable: 0, older_than_days: 7 }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByText("Existing")).toBeInTheDocument());
+    const es = esInstances[0];
+
+    // Two full-refresh events in quick succession.
+    act(() => {
+      es.onmessage?.({
+        data: JSON.stringify({ event: "snapshot", jobs: [] }),
+      } as MessageEvent);
+      es.onmessage?.({
+        data: JSON.stringify({ event: "expanded", job_id: "parent", child_count: 1 }),
+      } as MessageEvent);
+    });
+
+    // The second refresh (expanded) resolves immediately and adds the
+    // child row.
+    await waitFor(() => expect(screen.getByText("Discovered Child")).toBeInTheDocument());
+
+    // Now resolve the FIRST refresh with the older payload (no child).
+    await act(async () => {
+      resolveFirstRefresh(jobsListResponse([singleJob({ id: "existing", title: "Existing" })]));
+      await Promise.resolve();
+    });
+
+    // Discovered child stays visible — the older refresh was dropped.
+    expect(screen.getByText("Discovered Child")).toBeInTheDocument();
+    expect(screen.getByText("Existing")).toBeInTheDocument();
+  });
 });

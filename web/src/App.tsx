@@ -88,9 +88,25 @@ export default function App() {
     return new Map(lifecycleGen.current);
   }
 
+  // Monotonic counter for full /jobs refreshes. Each refresh() captures
+  // the next value before its fetch; only the response whose value still
+  // matches the latest at resolution gets to write. Closes the race
+  // where two refreshes (e.g., snapshot + expanded in quick succession)
+  // resolve out of order and the older one clobbers the newer one's
+  // discovery of new rows.
+  const refreshSeq = useRef(0);
+
   async function refresh() {
+    const seq = refreshSeq.current + 1;
+    refreshSeq.current = seq;
     const before = snapshotLifecycleGens();
     const list = await listJobs();
+    if (refreshSeq.current !== seq) {
+      // A newer refresh() was kicked off and is responsible for the
+      // post-state. Drop this older response so we don't roll back the
+      // newer one's results.
+      return;
+    }
     setJobs((prev) => {
       const prevById = new Map(prev.map((j) => [j.id, j]));
       const refreshIds = new Set(list.jobs.map((j) => j.id));

@@ -185,6 +185,40 @@ describe("JobRow", () => {
     expect(screen.queryByText(/ETA/i)).not.toBeInTheDocument();
   });
 
+  it("shows ETA without a leading separator when speed is absent", () => {
+    render(
+      <JobRow
+        job={{
+          ...baseJob,
+          status: "running",
+          speed_bps: null,
+          eta_s: 45,
+        }}
+        onCancel={() => {}}
+        onRetry={() => {}}
+      />
+    );
+    expect(screen.getByText("ETA 45s")).toBeInTheDocument();
+    expect(screen.queryByText(/^· ETA/)).not.toBeInTheDocument();
+  });
+
+  it("renders zero values explicitly instead of dropping the strip", () => {
+    render(
+      <JobRow
+        job={{
+          ...baseJob,
+          status: "running",
+          speed_bps: 0,
+          eta_s: 0,
+        }}
+        onCancel={() => {}}
+        onRetry={() => {}}
+      />
+    );
+    expect(screen.getByText("0 B/s")).toBeInTheDocument();
+    expect(screen.getByText("· ETA 0s")).toBeInTheDocument();
+  });
+
   it("does not render speed/ETA for non-running jobs", () => {
     render(
       <JobRow

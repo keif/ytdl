@@ -22,6 +22,27 @@ function relativeTime(ms: number | null | undefined): string {
   return `${weeks}w ago`;
 }
 
+function formatBytesPerSecond(bps: number | null | undefined): string {
+  if (bps === null || bps === undefined) return "";
+  if (bps <= 0) return "0 B/s";
+  if (bps < 1024) return `${Math.round(bps)} B/s`;
+  if (bps < 1024 * 1024) return `${(bps / 1024).toFixed(1)} KB/s`;
+  if (bps < 1024 * 1024 * 1024) return `${(bps / (1024 * 1024)).toFixed(1)} MB/s`;
+  return `${(bps / (1024 * 1024 * 1024)).toFixed(2)} GB/s`;
+}
+
+function formatEta(seconds: number | null | undefined): string {
+  if (seconds === null || seconds === undefined) return "";
+  if (seconds < 0) return "";
+  if (seconds < 60) return `${Math.floor(seconds)}s`;
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  if (m < 60) return `${m}m ${s.toString().padStart(2, "0")}s`;
+  const h = Math.floor(m / 60);
+  const rm = m % 60;
+  return `${h}h ${rm.toString().padStart(2, "0")}m`;
+}
+
 function pickTimestamp(job: Job): { label: string; ts: number | null } {
   if (job.status === "done" || job.status === "failed" || job.status === "canceled") {
     if (job.finished_at) return { label: job.status === "done" ? "finished" : job.status, ts: job.finished_at };
@@ -57,11 +78,29 @@ export function JobRow({ job, onCancel, onRetry }: Props) {
         <span className="text-xs uppercase text-neutral-500">{job.status}</span>
       </div>
       {job.status === "running" && (
-        <div className="flex items-center gap-2 text-xs text-neutral-400">
-          <div className="h-1 flex-1 bg-neutral-800 rounded">
-            <div className="h-1 bg-emerald-500 rounded" style={{ width: `${pct}%` }} />
+        <div className="flex flex-col gap-1 text-xs text-neutral-400">
+          <div className="flex items-center gap-2">
+            <div className="h-1 flex-1 bg-neutral-800 rounded">
+              <div className="h-1 bg-emerald-500 rounded" style={{ width: `${pct}%` }} />
+            </div>
+            <span>{pct}%</span>
           </div>
-          <span>{pct}%</span>
+          {(() => {
+            // Treat numeric 0 as "data present, downloader idle" — render it
+            // rather than collapsing the strip. Suppress only when the field
+            // hasn't been populated yet (null/undefined).
+            const hasSpeed = job.speed_bps !== null && job.speed_bps !== undefined;
+            const hasEta = job.eta_s !== null && job.eta_s !== undefined;
+            if (!hasSpeed && !hasEta) return null;
+            return (
+              <div className="flex items-center gap-3 text-neutral-500">
+                {hasSpeed ? <span>{formatBytesPerSecond(job.speed_bps)}</span> : null}
+                {hasEta ? (
+                  <span>{hasSpeed ? "· " : ""}ETA {formatEta(job.eta_s)}</span>
+                ) : null}
+              </div>
+            );
+          })()}
         </div>
       )}
       {job.error && (

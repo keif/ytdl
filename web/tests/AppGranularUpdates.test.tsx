@@ -392,4 +392,96 @@ describe("App granular SSE updates", () => {
     expect(screen.getByText(/finished/i)).toBeInTheDocument();
     expect(screen.queryByText(/RUNNING/i)).not.toBeInTheDocument();
   });
+
+  it("keeps NEW rows from a refresh even when one in-flight row was updated by a lifecycle event", async () => {
+    // The expanded-event scenario: a /jobs refresh discovers brand new
+    // child rows that aren't announced individually on the bus. If a
+    // lifecycle event for the EXISTING parent row fires during the
+    // refresh, we must protect the parent's newer state but still let
+    // the new children land.
+    let resolveExpandedRefresh: (value: Response) => void = () => {};
+    let initialJobsDone = false;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      if (url === "/jobs" || url.startsWith("/jobs?")) {
+        jobsCallCount++;
+        if (!initialJobsDone) {
+          initialJobsDone = true;
+          return jobsListResponse([singleJob({ id: "parent", title: "My Playlist" })]);
+        }
+        // Subsequent /jobs (the expansion refresh): hold open until we
+        // resolve it AFTER the lifecycle fetch for the parent lands.
+        return new Promise<Response>((resolve) => {
+          resolveExpandedRefresh = resolve;
+        });
+      }
+      if (url === "/status") return statusResponse();
+      if (url.startsWith("/jobs/clear/preview")) {
+        return new Response(
+          JSON.stringify({ clearable: 0, older_than_days: 7 }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url.match(/^\/jobs\/[^/]+$/)) {
+        getJobCallCount++;
+        // Parent row's lifecycle fetch — returns parent as DONE.
+        return new Response(
+          JSON.stringify(
+            singleJob({ id: "parent", title: "My Playlist", status: "done", finished_at: Date.now() }),
+          ),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByText("My Playlist")).toBeInTheDocument());
+    const es = esInstances[0];
+
+    // Expanded → starts the slow refresh that will return parent +
+    // children.
+    act(() => {
+      es.onmessage?.({
+        data: JSON.stringify({ event: "expanded", job_id: "parent", child_count: 2 }),
+      } as MessageEvent);
+    });
+    await waitFor(() => expect(jobsCallCount).toBe(2));
+
+    // Lifecycle event for the parent → fetches and patches parent to
+    // "done" while the expanded refresh is still pending.
+    act(() => {
+      es.onmessage?.({
+        data: JSON.stringify({ event: "finished", job_id: "parent" }),
+      } as MessageEvent);
+    });
+    await waitFor(() => expect(screen.getByText(/finished/i)).toBeInTheDocument());
+
+    // Now resolve the expanded refresh with a STALE parent + new children.
+    await act(async () => {
+      resolveExpandedRefresh(
+        jobsListResponse([
+          singleJob({ id: "parent", title: "My Playlist", status: "running" }),
+          singleJob({ id: "child-1", title: "Child 1" }),
+          singleJob({ id: "child-2", title: "Child 2" }),
+        ]),
+      );
+      await Promise.resolve();
+    });
+
+    // Parent stays "finished" (lifecycle write was newer); the new
+    // children appear with their refresh-returned "running" status.
+    expect(screen.getByText(/finished/i)).toBeInTheDocument();
+    expect(screen.getByText("Child 1")).toBeInTheDocument();
+    expect(screen.getByText("Child 2")).toBeInTheDocument();
+    // Two RUNNING pills for the two children; NOT three (which would
+    // mean parent had been clobbered back to running).
+    const runningPills = screen.getAllByText(/running/i);
+    expect(runningPills).toHaveLength(2);
+  });
 });

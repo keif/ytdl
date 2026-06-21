@@ -80,23 +80,33 @@ export default function App() {
   // would otherwise overwrite the row with stale data.
   const lifecycleGen = useRef<Map<string, number>>(new Map());
 
-  // Monotonic counter for full-list refreshes. Increments before each
-  // /jobs fetch; the response only replaces state if the counter still
-  // matches at resolution. Closes the race where a slow snapshot/expanded
-  // refresh resolves AFTER a newer lifecycle fetch has already patched a
-  // row with current state — without this guard, the stale full-list
-  // response would clobber it.
-  const refreshGen = useRef(0);
+  // Snapshot of lifecycle generations taken when refresh() starts; used to
+  // detect which rows had a newer lifecycle write land DURING the refresh.
+  // Those rows are preserved from current state instead of being replaced
+  // by the (older) /jobs response.
+  function snapshotLifecycleGens(): Map<string, number> {
+    return new Map(lifecycleGen.current);
+  }
 
   async function refresh() {
-    const gen = refreshGen.current + 1;
-    refreshGen.current = gen;
+    const before = snapshotLifecycleGens();
     const list = await listJobs();
-    if (refreshGen.current !== gen) {
-      // A newer refresh started while we were waiting. Drop this result.
-      return;
-    }
-    setJobs(list.jobs);
+    setJobs((prev) => {
+      // Rows whose lifecycle generation incremented during the refresh
+      // got patched with fresher data than this /jobs response contains.
+      // Keep the in-state version of those rows; take the rest from the
+      // refresh.
+      const prevById = new Map(prev.map((j) => [j.id, j]));
+      return list.jobs.map((row) => {
+        const beforeGen = before.get(row.id) ?? 0;
+        const nowGen = lifecycleGen.current.get(row.id) ?? 0;
+        if (nowGen > beforeGen) {
+          const live = prevById.get(row.id);
+          if (live) return live;
+        }
+        return row;
+      });
+    });
   }
 
   async function refreshAll() {
@@ -261,10 +271,12 @@ export default function App() {
             // already landed). Drop this response — it's stale.
             return;
           }
-          // Invalidate any concurrent full /jobs refresh so its older
-          // snapshot of this row doesn't overwrite the value we're
-          // about to write here.
-          refreshGen.current += 1;
+          // Note: lifecycleGen.current[jobId] is already at `gen` above —
+          // any concurrent refresh() that captured `lifecycleGen` BEFORE
+          // this lifecycle event fired will see the higher generation
+          // when it tries to merge results, and will keep the in-state
+          // (newer) version of this row instead of using its own stale
+          // /jobs row.
           setJobs((prev) => {
             const idx = prev.findIndex((j) => j.id === updated.id);
             if (idx === -1) return [updated, ...prev];

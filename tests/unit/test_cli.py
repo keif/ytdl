@@ -218,3 +218,99 @@ def test_cli_queue_clear_rejects_negative_days(tmp_data_dir: Path) -> None:
     result = runner.invoke(app, ["queue", "clear", "--older-than-days", "-1", "--yes"])
     assert result.exit_code == 2
     assert "must be >= 0" in result.output
+
+
+def test_format_bytes_per_second_handles_scale() -> None:
+    from ytdl.cli import _format_bytes_per_second
+
+    assert _format_bytes_per_second(None) == ""
+    assert _format_bytes_per_second(0) == "0 B/s"
+    assert _format_bytes_per_second(500) == "500 B/s"
+    assert _format_bytes_per_second(512_000) == "500.0 KB/s"
+    assert _format_bytes_per_second(5_242_880) == "5.0 MB/s"
+    assert _format_bytes_per_second(2 * 1024**3) == "2.00 GB/s"
+
+
+def test_format_eta_handles_units() -> None:
+    from ytdl.cli import _format_eta
+
+    assert _format_eta(None) == ""
+    assert _format_eta(-1) == ""
+    assert _format_eta(0) == "0s"
+    assert _format_eta(45) == "45s"
+    assert _format_eta(125) == "2m 05s"
+    assert _format_eta(3_700) == "1h 01m"
+
+
+def test_format_progress_blank_for_non_running() -> None:
+    from ytdl.cli import _format_progress
+    from ytdl.models import Job, JobKind, JobStatus
+
+    job = Job(
+        id="1", url="u", kind=JobKind.VIDEO, parent_job_id=None,
+        status=JobStatus.DONE, format_pref="best", output_dir="/o",
+        bytes_done=500, filesize_bytes=1000, speed_bps=1_000_000, eta_s=10,
+    )
+    assert _format_progress(job) == ""
+
+
+def test_format_progress_combines_available_pieces() -> None:
+    from ytdl.cli import _format_progress
+    from ytdl.models import Job, JobKind, JobStatus
+
+    job = Job(
+        id="1", url="u", kind=JobKind.VIDEO, parent_job_id=None,
+        status=JobStatus.RUNNING, format_pref="best", output_dir="/o",
+        bytes_done=500_000, filesize_bytes=1_000_000,
+        speed_bps=512_000, eta_s=45,
+    )
+    assert _format_progress(job) == "50% · 500.0 KB/s · ETA 45s"
+
+
+def test_format_progress_running_with_no_data_yet_is_blank() -> None:
+    from ytdl.cli import _format_progress
+    from ytdl.models import Job, JobKind, JobStatus
+
+    job = Job(
+        id="1", url="u", kind=JobKind.VIDEO, parent_job_id=None,
+        status=JobStatus.RUNNING, format_pref="best", output_dir="/o",
+        bytes_done=None, filesize_bytes=None, speed_bps=None, eta_s=None,
+    )
+    assert _format_progress(job) == ""
+
+
+def test_cli_queue_ls_includes_progress_column_for_running_jobs(
+    tmp_data_dir: Path,
+) -> None:
+    """queue ls now renders a progress column for running jobs."""
+    from ytdl.config import load_config
+    from ytdl.db import connect, migrate
+    from ytdl.models import JobKind
+    from ytdl.queue import enqueue
+
+    cfg = load_config()
+    conn = connect(cfg.db_path)
+    migrate(conn)
+    job_id = enqueue(
+        conn, url="https://yt/x", kind=JobKind.VIDEO,
+        format_pref="best", output_dir="/o",
+    )
+    conn.execute(
+        """
+        UPDATE jobs SET status='running', bytes_done=?, filesize_bytes=?,
+            speed_bps=?, eta_s=? WHERE id=?
+        """,
+        (500_000, 1_000_000, 512_000, 45, job_id),
+    )
+    conn.commit()
+    conn.close()
+
+    result = runner.invoke(app, ["queue", "ls"])
+    assert result.exit_code == 0
+    # Rich Tables can wrap long values across lines; check that the pieces
+    # all show up somewhere in the output.
+    out = result.stdout
+    assert "progress" in out.lower(), "progress column header missing"
+    assert "50%" in out
+    assert "KB/s" in out
+    assert "ETA" in out

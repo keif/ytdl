@@ -235,6 +235,55 @@ def serve(
     uvicorn.run(app_obj, host=host, port=port, log_level=cfg.log_level.lower())
 
 
+def _format_bytes_per_second(bps: int | None) -> str:
+    """Render a bytes/sec value as a short human string. Empty for missing
+    data, ``0 B/s`` for an explicit idle reading."""
+    if bps is None:
+        return ""
+    if bps <= 0:
+        return "0 B/s"
+    if bps < 1024:
+        return f"{int(bps)} B/s"
+    if bps < 1024 * 1024:
+        return f"{bps / 1024:.1f} KB/s"
+    if bps < 1024 * 1024 * 1024:
+        return f"{bps / (1024 * 1024):.1f} MB/s"
+    return f"{bps / (1024 * 1024 * 1024):.2f} GB/s"
+
+
+def _format_eta(seconds: int | None) -> str:
+    """Render a seconds value as ``45s`` / ``2m 05s`` / ``1h 23m``. Empty
+    for missing or negative readings."""
+    if seconds is None or seconds < 0:
+        return ""
+    if seconds < 60:
+        return f"{int(seconds)}s"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes}m {seconds % 60:02d}s"
+    hours = minutes // 60
+    return f"{hours}h {minutes % 60:02d}m"
+
+
+def _format_progress(job) -> str:
+    """Build the progress column for ``queue ls``: ``67% · 5.2 MB/s · ETA 2m``
+    for running jobs, blank otherwise. Pieces with no underlying data are
+    dropped."""
+    if job.status.value != "running":
+        return ""
+    parts: list[str] = []
+    if job.filesize_bytes and job.bytes_done is not None:
+        pct = min(100, int((job.bytes_done * 100) / job.filesize_bytes))
+        parts.append(f"{pct}%")
+    speed = _format_bytes_per_second(job.speed_bps)
+    if speed:
+        parts.append(speed)
+    eta = _format_eta(job.eta_s)
+    if eta:
+        parts.append(f"ETA {eta}")
+    return " · ".join(parts)
+
+
 @queue_app.command("ls")
 def queue_ls(status: str | None = typer.Option(None, "--status")) -> None:
     """List jobs in the queue, optionally filtered by status."""
@@ -246,9 +295,9 @@ def queue_ls(status: str | None = typer.Option(None, "--status")) -> None:
     jobs = list_jobs(conn, status=JobStatus(status) if status else None)
     conn.close()
 
-    table = Table("id", "status", "title", "url")
+    table = Table("id", "status", "progress", "title", "url")
     for j in jobs:
-        table.add_row(j.id, j.status.value, j.title or "—", j.url)
+        table.add_row(j.id, j.status.value, _format_progress(j), j.title or "—", j.url)
     console.print(table)
 
 

@@ -6,6 +6,7 @@ import {
   createJobsFromPick,
   enrichUrls,
   fetchStatus,
+  getJob,
   listJobs,
   previewClear,
   previewUrl,
@@ -21,8 +22,14 @@ import { PreviewPanel } from "./components/PreviewPanel";
 import { JobList } from "./components/JobList";
 import { useJobsStream } from "./hooks/useJobsStream";
 
-const REFRESH_DEBOUNCE_MS = 200;
 const PREVIEW_DEBOUNCE_MS = 500;
+const LIFECYCLE_EVENTS = new Set([
+  "started",
+  "finished",
+  "failed",
+  "canceled",
+  "expanded",
+]);
 
 /**
  * Preview lifecycle for the URL the user is currently typing/pasting.
@@ -49,7 +56,6 @@ export default function App() {
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [clearable, setClearable] = useState(0);
 
-  const refreshDebounce = useRef<number | null>(null);
   const previewDebounce = useRef<number | null>(null);
   const previewAbort = useRef<AbortController | null>(null);
 
@@ -65,16 +71,6 @@ export default function App() {
         .then((r) => setClearable(r.clearable))
         .catch(() => setClearable(0)),
     ]);
-  }
-
-  function scheduleRefresh() {
-    if (refreshDebounce.current !== null) {
-      window.clearTimeout(refreshDebounce.current);
-    }
-    refreshDebounce.current = window.setTimeout(() => {
-      refreshDebounce.current = null;
-      refreshAll().catch(() => {});
-    }, REFRESH_DEBOUNCE_MS);
   }
 
   // ---- Preview fetch on URL change ----
@@ -161,11 +157,6 @@ export default function App() {
   // ---- Initial refresh + SSE wiring ----
   useEffect(() => {
     refreshAll().catch(() => {});
-    return () => {
-      if (refreshDebounce.current !== null) {
-        window.clearTimeout(refreshDebounce.current);
-      }
-    };
   }, []);
 
   // Fetch cookies status once at mount so the header can show what yt-dlp
@@ -174,10 +165,55 @@ export default function App() {
     fetchStatus().then(setStatus).catch(() => {});
   }, []);
 
-  const sseState = useJobsStream(() => {
-    // Trailing-edge debounce: bursts of events (e.g. playlist expansion)
-    // result in at most one refresh per REFRESH_DEBOUNCE_MS.
-    scheduleRefresh();
+  const sseState = useJobsStream((event) => {
+    if (!event.event) return;
+
+    // High-frequency: progress events patch the matching row in place
+    // from event data, no fetch. The bar updates as fast as the bus
+    // fires (no longer capped at 5/s by the previous 200ms debounce).
+    if (event.event === "progress" && event.job_id) {
+      const jobId = event.job_id;
+      setJobs((prev) =>
+        prev.map((j) =>
+          j.id === jobId
+            ? {
+                ...j,
+                // Only overwrite when the event carries a non-null value;
+                // a null field on the event means "downloader didn't
+                // report this one this tick" — keep the prior value.
+                bytes_done: event.downloaded_bytes ?? j.bytes_done,
+                filesize_bytes: event.total_bytes ?? j.filesize_bytes,
+                speed_bps: event.speed ?? j.speed_bps,
+                eta_s: event.eta ?? j.eta_s,
+                status: (event.status as Job["status"]) ?? j.status,
+              }
+            : j,
+        ),
+      );
+      return;
+    }
+
+    // Lifecycle: fetch the single row and merge into state. Insert if
+    // it's not in state yet (e.g., a freshly-enqueued job that wasn't
+    // in the initial /jobs listing).
+    if (LIFECYCLE_EVENTS.has(event.event) && event.job_id) {
+      const jobId = event.job_id;
+      getJob(jobId)
+        .then((updated) => {
+          setJobs((prev) => {
+            const idx = prev.findIndex((j) => j.id === updated.id);
+            if (idx === -1) return [updated, ...prev];
+            const copy = [...prev];
+            copy[idx] = updated;
+            return copy;
+          });
+        })
+        .catch(() => {
+          // Single-job fetch failed (race with delete, network blip).
+          // Fall back to the full refresh as a safety net.
+          refresh().catch(() => {});
+        });
+    }
   });
 
   // ---- Submit handlers ----

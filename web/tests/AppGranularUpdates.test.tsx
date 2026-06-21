@@ -167,7 +167,36 @@ describe("App granular SSE updates", () => {
     expect(jobsCallCount).toBe(initialJobsFetches);
   });
 
-  it("ignores events with no job_id (e.g., snapshot, keep-alive)", async () => {
+  it("does not overwrite job.status from progress events", async () => {
+    // The server forwards yt-dlp's raw progress status (e.g. "downloading")
+    // which is NOT a queue JobStatus. Writing it into job.status would flip
+    // the row to a non-running state and hide the progress UI.
+    render(<App />);
+    await waitFor(() => expect(screen.getByText("My Video")).toBeInTheDocument());
+    const es = esInstances[0];
+
+    act(() => {
+      es.onmessage?.({
+        data: JSON.stringify({
+          event: "progress",
+          job_id: "abc",
+          status: "downloading", // raw yt-dlp status, not JobStatus
+          downloaded_bytes: 500_000,
+          total_bytes: 1_000_000,
+        }),
+      } as MessageEvent);
+    });
+
+    // Progress UI stays visible (it requires status === "running"). The
+    // status pill ALSO renders the value uppercased — we just need to
+    // assert progress UI is still there.
+    await waitFor(() => expect(screen.getByText("50%")).toBeInTheDocument());
+    // The status pill should still show "running" (uppercased) — NOT
+    // "downloading".
+    expect(screen.queryByText(/DOWNLOADING/i)).not.toBeInTheDocument();
+  });
+
+  it("triggers a full /jobs refresh on snapshot events (reconnect resync)", async () => {
     render(<App />);
     await waitFor(() => expect(screen.getByText("My Video")).toBeInTheDocument());
     const initialJobs = jobsCallCount;
@@ -180,7 +209,110 @@ describe("App granular SSE updates", () => {
       } as MessageEvent);
     });
 
-    expect(jobsCallCount).toBe(initialJobs);
+    await waitFor(() => expect(jobsCallCount).toBe(initialJobs + 1));
     expect(getJobCallCount).toBe(initialGet);
+  });
+
+  it("triggers a full /jobs refresh on playlist expansion", async () => {
+    // The children created during expansion are not announced on the
+    // bus individually — we have to resync via /jobs to learn about
+    // them, otherwise they stay invisible.
+    render(<App />);
+    await waitFor(() => expect(screen.getByText("My Video")).toBeInTheDocument());
+    const initialJobs = jobsCallCount;
+    const initialGet = getJobCallCount;
+    const es = esInstances[0];
+
+    act(() => {
+      es.onmessage?.({
+        data: JSON.stringify({
+          event: "expanded",
+          job_id: "parent-1",
+          child_count: 25,
+        }),
+      } as MessageEvent);
+    });
+
+    await waitFor(() => expect(jobsCallCount).toBe(initialJobs + 1));
+    expect(getJobCallCount).toBe(initialGet);
+  });
+
+  it("drops stale lifecycle responses via per-row generation guard", async () => {
+    // Two lifecycle events for the same job fire in quick succession.
+    // The first fetch resolves AFTER the second. The guard must drop the
+    // first response so the row reflects the latest state.
+    let resolveFirst: (value: Response) => void = () => {};
+    let firstFetchSeen = false;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      if (url === "/jobs" || url.startsWith("/jobs?")) {
+        jobsCallCount++;
+        return jobsListResponse([singleJob()]);
+      }
+      if (url === "/status") return statusResponse();
+      if (url.startsWith("/jobs/clear/preview")) {
+        return new Response(
+          JSON.stringify({ clearable: 0, older_than_days: 7 }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url.match(/^\/jobs\/[^/]+$/)) {
+        getJobCallCount++;
+        if (!firstFetchSeen) {
+          firstFetchSeen = true;
+          // Hold the first response open — we'll resolve it AFTER the
+          // second fetch has already landed.
+          return new Promise<Response>((resolve) => {
+            resolveFirst = resolve;
+          });
+        }
+        // Second fetch returns "done" immediately.
+        return new Response(
+          JSON.stringify(
+            singleJob({ status: "done", finished_at: Date.now() }),
+          ),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByText("My Video")).toBeInTheDocument());
+    const es = esInstances[0];
+
+    // Fire two lifecycle events for the same job in quick succession.
+    act(() => {
+      es.onmessage?.({
+        data: JSON.stringify({ event: "started", job_id: "abc" }),
+      } as MessageEvent);
+      es.onmessage?.({
+        data: JSON.stringify({ event: "finished", job_id: "abc" }),
+      } as MessageEvent);
+    });
+
+    // Wait for the second fetch to resolve and the row to show "done".
+    await waitFor(() => expect(screen.getByText(/finished/i)).toBeInTheDocument());
+
+    // Now resolve the first (stale) fetch with an OLD "running" snapshot.
+    // The guard should refuse to write it.
+    await act(async () => {
+      resolveFirst(
+        new Response(
+          JSON.stringify(singleJob({ status: "running" })),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      );
+      await Promise.resolve();
+    });
+
+    // Row stays on "finished" — the stale response was dropped.
+    expect(screen.getByText(/finished/i)).toBeInTheDocument();
+    expect(screen.queryByText(/RUNNING/i)).not.toBeInTheDocument();
   });
 });

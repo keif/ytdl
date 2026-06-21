@@ -23,7 +23,8 @@ function relativeTime(ms: number | null | undefined): string {
 }
 
 function formatBytesPerSecond(bps: number | null | undefined): string {
-  if (!bps || bps <= 0) return "";
+  if (bps === null || bps === undefined) return "";
+  if (bps <= 0) return "0 B/s";
   if (bps < 1024) return `${Math.round(bps)} B/s`;
   if (bps < 1024 * 1024) return `${(bps / 1024).toFixed(1)} KB/s`;
   if (bps < 1024 * 1024 * 1024) return `${(bps / (1024 * 1024)).toFixed(1)} MB/s`;
@@ -31,7 +32,8 @@ function formatBytesPerSecond(bps: number | null | undefined): string {
 }
 
 function formatEta(seconds: number | null | undefined): string {
-  if (seconds === null || seconds === undefined || seconds < 0) return "";
+  if (seconds === null || seconds === undefined) return "";
+  if (seconds < 0) return "";
   if (seconds < 60) return `${Math.floor(seconds)}s`;
   const m = Math.floor(seconds / 60);
   const s = Math.floor(seconds % 60);
@@ -83,12 +85,22 @@ export function JobRow({ job, onCancel, onRetry }: Props) {
             </div>
             <span>{pct}%</span>
           </div>
-          {(job.speed_bps || job.eta_s) && (
-            <div className="flex items-center gap-3 text-neutral-500">
-              {job.speed_bps ? <span>{formatBytesPerSecond(job.speed_bps)}</span> : null}
-              {job.eta_s ? <span>· ETA {formatEta(job.eta_s)}</span> : null}
-            </div>
-          )}
+          {(() => {
+            // Treat numeric 0 as "data present, downloader idle" — render it
+            // rather than collapsing the strip. Suppress only when the field
+            // hasn't been populated yet (null/undefined).
+            const hasSpeed = job.speed_bps !== null && job.speed_bps !== undefined;
+            const hasEta = job.eta_s !== null && job.eta_s !== undefined;
+            if (!hasSpeed && !hasEta) return null;
+            return (
+              <div className="flex items-center gap-3 text-neutral-500">
+                {hasSpeed ? <span>{formatBytesPerSecond(job.speed_bps)}</span> : null}
+                {hasEta ? (
+                  <span>{hasSpeed ? "· " : ""}ETA {formatEta(job.eta_s)}</span>
+                ) : null}
+              </div>
+            );
+          })()}
         </div>
       )}
       {job.error && (

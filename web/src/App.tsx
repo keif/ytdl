@@ -23,13 +23,27 @@ import { JobList } from "./components/JobList";
 import { useJobsStream } from "./hooks/useJobsStream";
 
 const PREVIEW_DEBOUNCE_MS = 500;
+// Lifecycle events that map cleanly to a single row update — fetch the
+// affected row and patch in state. `expanded` is intentionally not in
+// this set because the new children created during playlist expansion
+// are not separately announced on the bus; a full refresh is the only
+// way to learn about them.
 const LIFECYCLE_EVENTS = new Set([
   "started",
   "finished",
   "failed",
   "canceled",
-  "expanded",
 ]);
+
+// Events that require a full /jobs refresh because we can't reconstruct
+// the new state granularly:
+//   - snapshot: server sent on connect/reconnect. We may have missed
+//     transitions while disconnected; the snapshot itself lists
+//     non-terminal jobs but doesn't carry full row data, so we re-sync.
+//   - expanded: a playlist parent just enqueued N new child rows. The
+//     child enqueues are not published to the bus, so a full refresh
+//     is the only way to see them.
+const FULL_REFRESH_EVENTS = new Set(["snapshot", "expanded"]);
 
 /**
  * Preview lifecycle for the URL the user is currently typing/pasting.
@@ -58,6 +72,13 @@ export default function App() {
 
   const previewDebounce = useRef<number | null>(null);
   const previewAbort = useRef<AbortController | null>(null);
+
+  // Per-row generation counter. Each lifecycle event bumps the generation
+  // for that job id; only the response whose generation matches the
+  // current value is allowed to write to state. Closes the race where a
+  // slower `started` fetch resolves AFTER a faster `finished` fetch and
+  // would otherwise overwrite the row with stale data.
+  const lifecycleGen = useRef<Map<string, number>>(new Map());
 
   async function refresh() {
     const list = await listJobs();
@@ -171,6 +192,12 @@ export default function App() {
     // High-frequency: progress events patch the matching row in place
     // from event data, no fetch. The bar updates as fast as the bus
     // fires (no longer capped at 5/s by the previous 200ms debounce).
+    //
+    // Important: the server forwards yt-dlp's raw progress status here
+    // (e.g. "downloading", "finished") — NOT the queue's JobStatus
+    // values. Don't overwrite job.status from progress events or the
+    // row would flip to a non-running status and JobRow would hide the
+    // progress UI. Status only ever changes via lifecycle events.
     if (event.event === "progress" && event.job_id) {
       const jobId = event.job_id;
       setJobs((prev) =>
@@ -179,13 +206,12 @@ export default function App() {
             ? {
                 ...j,
                 // Only overwrite when the event carries a non-null value;
-                // a null field on the event means "downloader didn't
-                // report this one this tick" — keep the prior value.
+                // a null field means "downloader didn't report this one
+                // this tick" — keep the prior value.
                 bytes_done: event.downloaded_bytes ?? j.bytes_done,
                 filesize_bytes: event.total_bytes ?? j.filesize_bytes,
                 speed_bps: event.speed ?? j.speed_bps,
                 eta_s: event.eta ?? j.eta_s,
-                status: (event.status as Job["status"]) ?? j.status,
               }
             : j,
         ),
@@ -193,13 +219,34 @@ export default function App() {
       return;
     }
 
+    // Snapshot (initial connect / reconnect) and expanded (playlist
+    // children just appeared, no per-child bus events): the granular
+    // path can't reconstruct the new state, so fall back to a full
+    // refresh.
+    if (FULL_REFRESH_EVENTS.has(event.event)) {
+      refresh().catch(() => {});
+      return;
+    }
+
     // Lifecycle: fetch the single row and merge into state. Insert if
     // it's not in state yet (e.g., a freshly-enqueued job that wasn't
     // in the initial /jobs listing).
+    //
+    // Guard against stale responses overwriting newer state by tracking
+    // a per-row generation: bump before the fetch, only apply the
+    // response if the generation still matches when the promise
+    // resolves.
     if (LIFECYCLE_EVENTS.has(event.event) && event.job_id) {
       const jobId = event.job_id;
+      const gen = (lifecycleGen.current.get(jobId) ?? 0) + 1;
+      lifecycleGen.current.set(jobId, gen);
       getJob(jobId)
         .then((updated) => {
+          if (lifecycleGen.current.get(jobId) !== gen) {
+            // A newer lifecycle event has already fired (and may have
+            // already landed). Drop this response — it's stale.
+            return;
+          }
           setJobs((prev) => {
             const idx = prev.findIndex((j) => j.id === updated.id);
             if (idx === -1) return [updated, ...prev];

@@ -637,4 +637,97 @@ describe("App granular SSE updates", () => {
     expect(screen.getByText("Discovered Child")).toBeInTheDocument();
     expect(screen.getByText("Existing")).toBeInTheDocument();
   });
+
+  it("drops a delayed lifecycle response that lands after a refresh updated the same row", async () => {
+    // Scenario: 'started' fires for a job that turns out to be a
+    // playlist parent. The single-row fetch is slow. Before it
+    // resolves, 'expanded' fires and the full refresh lands with the
+    // promoted (kind=playlist) parent row. Then the delayed 'started'
+    // response resolves with the stale (kind=video) data. It must be
+    // dropped or the refresh's data gets clobbered.
+    let resolveSlowLifecycle: (value: Response) => void = () => {};
+    let slowLifecycleSeen = false;
+    let initialJobsDone = false;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      if (url === "/jobs" || url.startsWith("/jobs?")) {
+        jobsCallCount++;
+        if (!initialJobsDone) {
+          initialJobsDone = true;
+          return jobsListResponse([
+            singleJob({ id: "p", title: "Pre-Promotion", kind: "video" }),
+          ]);
+        }
+        // The expanded refresh returns the promoted parent (kind=playlist).
+        return jobsListResponse([
+          singleJob({ id: "p", title: "Promoted Playlist", kind: "playlist" }),
+        ]);
+      }
+      if (url === "/status") return statusResponse();
+      if (url.startsWith("/jobs/clear/preview")) {
+        return new Response(
+          JSON.stringify({ clearable: 0, older_than_days: 7 }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url.match(/^\/jobs\/[^/]+$/)) {
+        getJobCallCount++;
+        if (!slowLifecycleSeen) {
+          slowLifecycleSeen = true;
+          // Hold the lifecycle response open — will resolve LAST with
+          // stale pre-promotion data.
+          return new Promise<Response>((resolve) => {
+            resolveSlowLifecycle = resolve;
+          });
+        }
+        return new Response(
+          JSON.stringify(singleJob({ id: "p", title: "Other" })),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByText("Pre-Promotion")).toBeInTheDocument());
+    const es = esInstances[0];
+
+    // 'started' for parent → starts the slow lifecycle fetch.
+    act(() => {
+      es.onmessage?.({
+        data: JSON.stringify({ event: "started", job_id: "p" }),
+      } as MessageEvent);
+    });
+    await waitFor(() => expect(getJobCallCount).toBe(1));
+
+    // 'expanded' → full refresh which lands with promoted data.
+    act(() => {
+      es.onmessage?.({
+        data: JSON.stringify({ event: "expanded", job_id: "p", child_count: 0 }),
+      } as MessageEvent);
+    });
+    await waitFor(() => expect(screen.getByText("Promoted Playlist")).toBeInTheDocument());
+
+    // Now resolve the slow lifecycle fetch with stale pre-promotion
+    // data. It must NOT replace the row.
+    await act(async () => {
+      resolveSlowLifecycle(
+        new Response(
+          JSON.stringify(
+            singleJob({ id: "p", title: "Pre-Promotion (stale)", kind: "video" }),
+          ),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      );
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("Promoted Playlist")).toBeInTheDocument();
+    expect(screen.queryByText(/Pre-Promotion/)).not.toBeInTheDocument();
+  });
 });

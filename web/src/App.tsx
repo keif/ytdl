@@ -73,19 +73,24 @@ export default function App() {
   const previewDebounce = useRef<number | null>(null);
   const previewAbort = useRef<AbortController | null>(null);
 
-  // Per-row generation counter. Each lifecycle event bumps the generation
-  // for that job id; only the response whose generation matches the
-  // current value is allowed to write to state. Closes the race where a
-  // slower `started` fetch resolves AFTER a faster `finished` fetch and
-  // would otherwise overwrite the row with stale data.
+  // Per-row generation counter for issued lifecycle fetches. Each event
+  // bumps it; only the response whose value still matches at resolution
+  // gets to write. Closes the race where a slower fetch lands after a
+  // newer one for the same row.
   const lifecycleGen = useRef<Map<string, number>>(new Map());
 
-  // Snapshot of lifecycle generations taken when refresh() starts; used to
-  // detect which rows had a newer lifecycle write land DURING the refresh.
-  // Those rows are preserved from current state instead of being replaced
-  // by the (older) /jobs response.
-  function snapshotLifecycleGens(): Map<string, number> {
-    return new Map(lifecycleGen.current);
+  // Per-row counter for lifecycle responses that have ACTUALLY committed
+  // to state. The refresh merge consults this — not lifecycleGen — so a
+  // refresh only protects rows whose lifecycle WRITE finished during the
+  // refresh, not rows whose lifecycle fetch is merely in flight.
+  const lifecycleWritten = useRef<Map<string, number>>(new Map());
+
+  // Snapshot of committed lifecycle write-counts taken when refresh()
+  // starts; used to detect which rows had a lifecycle write COMMIT during
+  // the refresh. Those rows are preserved from current state instead of
+  // being replaced by the (older) /jobs response.
+  function snapshotLifecycleWrites(): Map<string, number> {
+    return new Map(lifecycleWritten.current);
   }
 
   // Monotonic counter for full /jobs refreshes. Each refresh() captures
@@ -99,7 +104,7 @@ export default function App() {
   async function refresh() {
     const seq = refreshSeq.current + 1;
     refreshSeq.current = seq;
-    const before = snapshotLifecycleGens();
+    const before = snapshotLifecycleWrites();
     const list = await listJobs();
     if (refreshSeq.current !== seq) {
       // A newer refresh() was kicked off and is responsible for the
@@ -112,11 +117,12 @@ export default function App() {
       const refreshIds = new Set(list.jobs.map((j) => j.id));
 
       // 1. Walk the refresh payload, preferring in-state rows whose
-      //    lifecycle generation incremented during the refresh.
+      //    lifecycle write COMMITTED during the refresh (i.e., the
+      //    in-state row is newer than what /jobs gave us).
       const merged = list.jobs.map((row) => {
-        const beforeGen = before.get(row.id) ?? 0;
-        const nowGen = lifecycleGen.current.get(row.id) ?? 0;
-        if (nowGen > beforeGen) {
+        const beforeWrites = before.get(row.id) ?? 0;
+        const nowWrites = lifecycleWritten.current.get(row.id) ?? 0;
+        if (nowWrites > beforeWrites) {
           const live = prevById.get(row.id);
           if (live) return live;
         }
@@ -131,9 +137,9 @@ export default function App() {
       //    handler's prepend behavior.
       for (const live of prev) {
         if (refreshIds.has(live.id)) continue;
-        const beforeGen = before.get(live.id) ?? 0;
-        const nowGen = lifecycleGen.current.get(live.id) ?? 0;
-        if (nowGen > beforeGen) merged.unshift(live);
+        const beforeWrites = before.get(live.id) ?? 0;
+        const nowWrites = lifecycleWritten.current.get(live.id) ?? 0;
+        if (nowWrites > beforeWrites) merged.unshift(live);
       }
 
       return merged;
@@ -295,6 +301,10 @@ export default function App() {
       const jobId = event.job_id;
       const gen = (lifecycleGen.current.get(jobId) ?? 0) + 1;
       lifecycleGen.current.set(jobId, gen);
+      // Snapshot the refresh sequence at fetch issue. If a refresh
+      // completes (resolves successfully) between now and when this
+      // lifecycle fetch resolves, our row data is stale — drop it.
+      const refreshSeqAtIssue = refreshSeq.current;
       getJob(jobId)
         .then((updated) => {
           if (lifecycleGen.current.get(jobId) !== gen) {
@@ -302,12 +312,17 @@ export default function App() {
             // already landed). Drop this response — it's stale.
             return;
           }
-          // Note: lifecycleGen.current[jobId] is already at `gen` above —
-          // any concurrent refresh() that captured `lifecycleGen` BEFORE
-          // this lifecycle event fired will see the higher generation
-          // when it tries to merge results, and will keep the in-state
-          // (newer) version of this row instead of using its own stale
-          // /jobs row.
+          if (refreshSeq.current !== refreshSeqAtIssue) {
+            // A refresh started AFTER our fetch began and may have
+            // already written newer state for this row. Drop our
+            // response to avoid clobbering it.
+            return;
+          }
+          // Record that a lifecycle write committed for this row. The
+          // refresh merge consults this to decide whether to keep the
+          // in-state row over its own /jobs payload.
+          const writes = lifecycleWritten.current.get(jobId) ?? 0;
+          lifecycleWritten.current.set(jobId, writes + 1);
           setJobs((prev) => {
             const idx = prev.findIndex((j) => j.id === updated.id);
             if (idx === -1) return [updated, ...prev];

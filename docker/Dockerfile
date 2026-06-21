@@ -2,7 +2,10 @@
 FROM node:22-alpine AS web-build
 WORKDIR /web
 COPY web/package.json web/pnpm-lock.yaml* ./
-RUN corepack enable && corepack prepare pnpm@10.15.0 --activate \
+# node:26-alpine dropped corepack from the default install, so install
+# pnpm directly via npm instead. Pin to the same version the lockfile
+# was generated against to keep installs deterministic.
+RUN npm install -g pnpm@10.15.0 \
     && (pnpm install --frozen-lockfile || pnpm install)
 COPY web/ ./
 RUN pnpm build

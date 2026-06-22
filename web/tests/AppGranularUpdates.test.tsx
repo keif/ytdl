@@ -370,4 +370,179 @@ describe("App granular SSE updates", () => {
     expect(screen.getByText("80%")).toBeInTheDocument();
     expect(screen.queryByText("10%")).not.toBeInTheDocument();
   });
+
+  it("does not suppress an earlier successful refresh when a later refresh fails", async () => {
+    // Two refresh-triggering events overlap. The LATER /jobs request
+    // fails. The earlier successful one must still write — otherwise
+    // the UI gets stuck on the pre-refresh state.
+    let resolveFirstRefresh: (value: Response) => void = () => {};
+    let rejectSecondRefresh: (reason: Error) => void = () => {};
+    let initialJobsDone = false;
+    let firstRefreshSeen = false;
+    let secondRefreshSeen = false;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      if (url === "/jobs" || url.startsWith("/jobs?")) {
+        jobsCallCount++;
+        if (!initialJobsDone) {
+          initialJobsDone = true;
+          return jobsListResponse([singleJob({ id: "existing", title: "Existing" })]);
+        }
+        if (!firstRefreshSeen) {
+          firstRefreshSeen = true;
+          return new Promise<Response>((resolve) => {
+            resolveFirstRefresh = resolve;
+          });
+        }
+        if (!secondRefreshSeen) {
+          secondRefreshSeen = true;
+          return new Promise<Response>((_, reject) => {
+            rejectSecondRefresh = reject;
+          });
+        }
+        return jobsListResponse([]);
+      }
+      if (url === "/status") return statusResponse();
+      if (url.startsWith("/jobs/clear/preview")) {
+        return new Response(
+          JSON.stringify({ clearable: 0, older_than_days: 7 }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByText("Existing")).toBeInTheDocument());
+    const es = esInstances[0];
+
+    // Two refresh-triggering events in succession.
+    act(() => {
+      es.onmessage?.({
+        data: JSON.stringify({ event: "snapshot", jobs: [] }),
+      } as MessageEvent);
+      es.onmessage?.({
+        data: JSON.stringify({ event: "expanded", job_id: "parent", child_count: 1 }),
+      } as MessageEvent);
+    });
+    await waitFor(() => expect(jobsCallCount).toBe(3));
+
+    // Reject the LATER refresh first.
+    await act(async () => {
+      rejectSecondRefresh(new Error("network failure"));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // Now resolve the EARLIER refresh with discovered new rows.
+    await act(async () => {
+      resolveFirstRefresh(
+        jobsListResponse([
+          singleJob({ id: "existing", title: "Existing" }),
+          singleJob({ id: "discovered", title: "Discovered Child" }),
+        ]),
+      );
+      await Promise.resolve();
+    });
+
+    // The earlier success should have applied — discovered child visible.
+    await waitFor(() =>
+      expect(screen.getByText("Discovered Child")).toBeInTheDocument(),
+    );
+    expect(screen.getByText("Existing")).toBeInTheDocument();
+  });
+
+  it("keeps bytes_done and filesize_bytes paired when merging progress on refresh", async () => {
+    // If live state has 800/1000 (80%) and refresh returns 200/2000
+    // (10%, because total grew from estimate), the merge must keep
+    // 800/1000 (live wins) — NOT 800/2000 (40%, mismatched pair).
+    let resolveRefresh: (value: Response) => void = () => {};
+    let initialJobsDone = false;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      if (url === "/jobs" || url.startsWith("/jobs?")) {
+        jobsCallCount++;
+        if (!initialJobsDone) {
+          initialJobsDone = true;
+          return jobsListResponse([
+            singleJob({
+              id: "abc",
+              title: "Live",
+              status: "running",
+              bytes_done: 0,
+              filesize_bytes: 1_000_000,
+            }),
+          ]);
+        }
+        return new Promise<Response>((resolve) => {
+          resolveRefresh = resolve;
+        });
+      }
+      if (url === "/status") return statusResponse();
+      if (url.startsWith("/jobs/clear/preview")) {
+        return new Response(
+          JSON.stringify({ clearable: 0, older_than_days: 7 }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByText("Live")).toBeInTheDocument());
+    const es = esInstances[0];
+
+    // Snapshot → starts slow refresh.
+    act(() => {
+      es.onmessage?.({
+        data: JSON.stringify({ event: "snapshot", jobs: [] }),
+      } as MessageEvent);
+    });
+    await waitFor(() => expect(jobsCallCount).toBe(2));
+
+    // Progress event advances live to 800/1000 (80%).
+    act(() => {
+      es.onmessage?.({
+        data: JSON.stringify({
+          event: "progress",
+          job_id: "abc",
+          downloaded_bytes: 800_000,
+          total_bytes: 1_000_000,
+        }),
+      } as MessageEvent);
+    });
+    await waitFor(() => expect(screen.getByText("80%")).toBeInTheDocument());
+
+    // Refresh lands with smaller bytes_done but a LARGER total
+    // (200/2000 = 10%).
+    await act(async () => {
+      resolveRefresh(
+        jobsListResponse([
+          singleJob({
+            id: "abc",
+            title: "Live",
+            status: "running",
+            bytes_done: 200_000,
+            filesize_bytes: 2_000_000,
+          }),
+        ]),
+      );
+      await Promise.resolve();
+    });
+
+    // Should be 80% — live's bytes (800k) over live's total (1M).
+    // NOT 40% — live's bytes (800k) over refresh's total (2M).
+    expect(screen.getByText("80%")).toBeInTheDocument();
+    expect(screen.queryByText("40%")).not.toBeInTheDocument();
+  });
 });

@@ -21,7 +21,6 @@ import { PreviewPanel } from "./components/PreviewPanel";
 import { JobList } from "./components/JobList";
 import { useJobsStream } from "./hooks/useJobsStream";
 
-const REFRESH_DEBOUNCE_MS = 200;
 const PREVIEW_DEBOUNCE_MS = 500;
 
 /**
@@ -49,13 +48,77 @@ export default function App() {
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [clearable, setClearable] = useState(0);
 
-  const refreshDebounce = useRef<number | null>(null);
   const previewDebounce = useRef<number | null>(null);
   const previewAbort = useRef<AbortController | null>(null);
 
+  // Monotonic counter for full /jobs refreshes. Each refresh() captures
+  // the next value before its fetch; only the response whose value still
+  // matches the latest at resolution gets to write. Closes the race
+  // where two refreshes (e.g., snapshot + expanded in quick succession)
+  // resolve out of order and the older one clobbers the newer one's
+  // discovery of new rows.
+  const refreshSeq = useRef(0);
+
   async function refresh() {
-    const list = await listJobs();
-    setJobs(list.jobs);
+    const seq = refreshSeq.current + 1;
+    refreshSeq.current = seq;
+    let list: { jobs: Job[]; total: number };
+    try {
+      list = await listJobs();
+    } catch (e) {
+      // Roll back our claim on the seq so an earlier successful refresh
+      // that's still in flight can still write — its response is the
+      // only data the user is going to see.
+      //
+      // Known limit: with 3+ overlapping refreshes where two NEWER ones
+      // fail out of order, the rollback can land on a seq that itself
+      // failed, suppressing an even-earlier success. We accept this
+      // because (a) it requires three concurrent refreshes, which
+      // single-user homelab use almost never produces, and (b) the
+      // user-visible failure mode is "UI stays on the pre-refresh
+      // listing until the next SSE event triggers another refresh" —
+      // not data loss. The next event arrives within seconds in any
+      // realistic flow.
+      if (refreshSeq.current === seq) {
+        refreshSeq.current = seq - 1;
+      }
+      throw e;
+    }
+    if (refreshSeq.current !== seq) {
+      // A newer refresh() was kicked off and is responsible for the
+      // post-state. Drop this older response so we don't roll back the
+      // newer one's results.
+      return;
+    }
+    setJobs((prev) => {
+      // For running rows, preserve the more-advanced progress fields
+      // that may have come from live SSE events while /jobs was
+      // fetching. The /jobs payload surfaces SQLite values that workers
+      // write throttled (1Hz); the SSE bus is unthrottled.
+      //
+      // bytes_done and filesize_bytes are a coupled pair (the percentage
+      // is bytes/total). When we keep one side's bytes_done, we MUST
+      // keep the same side's filesize_bytes too, otherwise the
+      // percentage misreports.
+      const prevById = new Map(prev.map((j) => [j.id, j]));
+      return list.jobs.map((row) => {
+        if (row.status !== "running") return row;
+        const live = prevById.get(row.id);
+        if (!live || live.status !== "running") return row;
+        const liveDone = live.bytes_done ?? 0;
+        const rowDone = row.bytes_done ?? 0;
+        if (liveDone > rowDone) {
+          return {
+            ...row,
+            bytes_done: live.bytes_done,
+            filesize_bytes: live.filesize_bytes ?? row.filesize_bytes,
+            speed_bps: live.speed_bps ?? row.speed_bps,
+            eta_s: live.eta_s ?? row.eta_s,
+          };
+        }
+        return row;
+      });
+    });
   }
 
   async function refreshAll() {
@@ -65,16 +128,6 @@ export default function App() {
         .then((r) => setClearable(r.clearable))
         .catch(() => setClearable(0)),
     ]);
-  }
-
-  function scheduleRefresh() {
-    if (refreshDebounce.current !== null) {
-      window.clearTimeout(refreshDebounce.current);
-    }
-    refreshDebounce.current = window.setTimeout(() => {
-      refreshDebounce.current = null;
-      refreshAll().catch(() => {});
-    }, REFRESH_DEBOUNCE_MS);
   }
 
   // ---- Preview fetch on URL change ----
@@ -161,11 +214,6 @@ export default function App() {
   // ---- Initial refresh + SSE wiring ----
   useEffect(() => {
     refreshAll().catch(() => {});
-    return () => {
-      if (refreshDebounce.current !== null) {
-        window.clearTimeout(refreshDebounce.current);
-      }
-    };
   }, []);
 
   // Fetch cookies status once at mount so the header can show what yt-dlp
@@ -174,10 +222,44 @@ export default function App() {
     fetchStatus().then(setStatus).catch(() => {});
   }, []);
 
-  const sseState = useJobsStream(() => {
-    // Trailing-edge debounce: bursts of events (e.g. playlist expansion)
-    // result in at most one refresh per REFRESH_DEBOUNCE_MS.
-    scheduleRefresh();
+  const sseState = useJobsStream((event) => {
+    if (!event.event) return;
+
+    // High-frequency: progress events patch the matching row in place
+    // from event data, no fetch. The bar updates as fast as the bus
+    // fires (no longer capped at 5/s by the previous 200ms debounce).
+    //
+    // Important: the server forwards yt-dlp's raw progress status here
+    // (e.g. "downloading", "finished") — NOT the queue's JobStatus
+    // values. Don't overwrite job.status from progress events or the
+    // row would flip to a non-running status and JobRow would hide the
+    // progress UI. Status only ever changes via the refresh() path.
+    if (event.event === "progress" && event.job_id) {
+      const jobId = event.job_id;
+      setJobs((prev) =>
+        prev.map((j) =>
+          j.id === jobId
+            ? {
+                ...j,
+                bytes_done: event.downloaded_bytes ?? j.bytes_done,
+                filesize_bytes: event.total_bytes ?? j.filesize_bytes,
+                speed_bps: event.speed ?? j.speed_bps,
+                eta_s: event.eta ?? j.eta_s,
+              }
+            : j,
+        ),
+      );
+      return;
+    }
+
+    // Everything non-progress (snapshot, expanded, started, finished,
+    // failed, canceled): a single refresh() is the canonical path. The
+    // previous approach used getJob() per lifecycle event for "minimal"
+    // fetches, but the resulting race surface (multiple fetches in
+    // flight, out-of-order resolution against refresh()) wasn't worth
+    // it — lifecycle events are low frequency and progress is where
+    // the real perf win lives.
+    refresh().catch(() => {});
   });
 
   // ---- Submit handlers ----

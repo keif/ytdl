@@ -41,6 +41,12 @@ export async function listJobs(): Promise<JobList> {
   return r.json();
 }
 
+export async function getJob(id: string): Promise<Job> {
+  const r = await fetch(`/jobs/${encodeURIComponent(id)}`);
+  if (!r.ok) throw new Error(`getJob: ${r.status}`);
+  return r.json();
+}
+
 export async function createJob(url: string, formatPref?: string): Promise<Job> {
   const r = await fetch("/jobs", {
     method: "POST",

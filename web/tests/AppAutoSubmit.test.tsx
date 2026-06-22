@@ -327,6 +327,30 @@ describe("App auto-submit countdown", () => {
     expect(postedBodies.length).toBe(0);
   });
 
+  it("typing one more character during the countdown still cancels it", async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText(/Paste a YouTube URL/i)).toBeInTheDocument();
+    });
+
+    vi.useFakeTimers();
+    await pasteAndAwaitPreview("https://yt/x");
+
+    // Banner is up. Type one more character — this is the typing-
+    // extension shape that preserves audio-only/output-dir state. The
+    // countdown still captured the OLD URL, so it must cancel anyway.
+    expect(screen.getByRole("status")).toHaveTextContent(/Downloading in\s*5s/);
+    const input = screen.getByPlaceholderText(/Paste a YouTube URL/i);
+    fireEvent.change(input, { target: { value: "https://yt/xy" } });
+
+    // Banner gone, no submit even after the original window elapses.
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    expect(postedBodies.length).toBe(0);
+  });
+
   it("manual Download click during countdown does not double-submit", async () => {
     render(<App />);
     await waitFor(() => {

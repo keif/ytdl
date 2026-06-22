@@ -428,9 +428,11 @@ export default function App() {
       autoSubmitInterval.current = null;
     }
     const delay = status?.autosubmit_delay_s ?? 0;
-    if (!singleEntry || delay <= 0) {
-      // Either preview hasn't resolved to a single video, or the feature
-      // is disabled via config. Make sure the banner is not visible.
+    // Don't start a countdown while a submit is in flight. Common shape:
+    // user clicks Download, the manual POST is mid-flight, then /status
+    // arrives and re-fires this effect — without the guard, a new timer
+    // would race the manual submit and enqueue the same URL twice.
+    if (!singleEntry || delay <= 0 || submitting) {
       if (autoSubmit !== null) setAutoSubmit(null);
       return;
     }
@@ -473,9 +475,11 @@ export default function App() {
     // We intentionally key off the entry URL (not the entry object) so the
     // effect only restarts when the user actually moves to a different
     // video. `status?.autosubmit_delay_s` covers the case where /status
-    // resolves after the preview already did.
+    // resolves after the preview already did. `submitting` ensures we
+    // tear down (or skip starting) a countdown while a manual submit is
+    // in flight.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [singleEntry?.url, status?.autosubmit_delay_s]);
+  }, [singleEntry?.url, status?.autosubmit_delay_s, submitting]);
 
   return (
     <div className="min-h-screen p-6 max-w-4xl mx-auto flex flex-col gap-6">
@@ -548,14 +552,20 @@ export default function App() {
           const isFreshPaste = url === "" && value !== "";
           const isTypingExtension =
             value.startsWith(url) && value.length === url.length + 1;
+          // Audio-only and output-dir are preserved across typing-shaped
+          // edits (the user is still composing the same URL). They reset
+          // only on non-typing transitions (replace, backspace, multi-
+          // char extension, clear).
           if (!isFreshPaste && !isTypingExtension) {
             setAudioOnly(false);
             setOutputDir("");
-            // The new URL invalidates the in-flight countdown — the
-            // preview is now stale and a fresh countdown (if any) will
-            // start when the new preview resolves.
-            cancelAutoSubmit();
           }
+          // The auto-submit countdown is ALWAYS invalidated by any URL
+          // change. The timer captured the previous URL at scheduling
+          // time; a tick after the input has changed would submit the
+          // stale value. A fresh countdown (if any) will start when the
+          // new preview resolves.
+          if (value !== url) cancelAutoSubmit();
           setUrl(value);
         }}
         format={format}

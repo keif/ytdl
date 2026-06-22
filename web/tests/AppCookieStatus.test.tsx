@@ -39,6 +39,7 @@ describe("App cookies status", () => {
             cookies_source: "autodetect",
             deno: { present: true, path: "/usr/local/bin/deno" },
             ffmpeg: { present: true, path: "/usr/local/bin/ffmpeg" },
+            subtitles_default: false,
           }),
           { status: 200, headers: { "content-type": "application/json" } },
         );
@@ -100,6 +101,7 @@ describe("App runtime missing-binary warnings", () => {
             cookies_source: "none",
             deno: { present: false, path: null },
             ffmpeg: { present: false, path: null },
+            subtitles_default: false,
           }),
           { status: 200, headers: { "content-type": "application/json" } },
         );

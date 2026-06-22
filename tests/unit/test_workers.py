@@ -327,6 +327,45 @@ async def test_supervisor_publishes_finished_with_event_id_pointing_at_db_row(
     assert started["_event_id"] != event_id
 
 
+def test_default_download_adapter_forwards_subtitle_langs() -> None:
+    """The adapter wraps the supervisor's DownloadContext with the lazy yt-dlp
+    class. It must preserve subtitle_langs through that hop — otherwise
+    config-driven locales silently fall back to the default tuple and
+    yt-dlp never requests the configured languages.
+    """
+    from ytdl.downloader import DownloadContext, DownloadResult
+    from ytdl.workers import _default_download_adapter
+
+    seen: dict[str, object] = {}
+
+    def fake_default_download(job, ctx: DownloadContext) -> DownloadResult:
+        seen["subtitle_langs"] = ctx.subtitle_langs
+        seen["ydl_cls"] = ctx.ydl_cls
+        return DownloadResult(
+            output_path="/o/x.mp4", title=None, video_id=None,
+            uploader=None, duration_s=None, filesize_bytes=None,
+        )
+
+    import ytdl.workers as workers_mod
+    original = workers_mod.default_download
+    workers_mod.default_download = fake_default_download
+    try:
+        outer_ctx = DownloadContext(
+            ydl_cls=None,
+            cookies_browser=None,
+            on_progress=None,
+            cancel_flag=lambda: False,
+            subtitle_langs=("es", "en"),
+        )
+        _default_download_adapter(object(), outer_ctx)
+    finally:
+        workers_mod.default_download = original
+
+    assert seen["subtitle_langs"] == ("es", "en")
+    # ydl_cls must have been swapped to the real YoutubeDL.
+    assert seen["ydl_cls"] is not None
+
+
 @pytest.mark.asyncio
 async def test_supervisor_probe_403_includes_cookie_hint(tmp_path: Path) -> None:
     conn = connect(tmp_path / "t.db")

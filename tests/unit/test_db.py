@@ -52,6 +52,39 @@ def test_migrate_adds_force_overwrite_column(tmp_path: Path) -> None:
     assert "force_overwrite" in cols
 
 
+def test_migrate_adds_subtitles_column(tmp_path: Path) -> None:
+    db_path = tmp_path / "test.db"
+    conn = connect(db_path)
+    migrate(conn)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+    assert "subtitles" in cols
+
+
+def test_migrate_v2_to_v3_preserves_existing_rows(tmp_path: Path) -> None:
+    """A DB at schema v2 with rows must migrate to v3 without losing them.
+    The new column defaults to 0 (False) so existing rows stay opt-out."""
+    db_path = tmp_path / "test.db"
+    conn = connect(db_path)
+    # Walk to v2 first using the real migration path so we don't have to
+    # hand-recreate every intermediate shape.
+    migrate(conn)
+    # Drop forward state to v2 by clearing the new column + version.
+    conn.execute("ALTER TABLE jobs DROP COLUMN subtitles")
+    conn.execute("DELETE FROM schema_version")
+    conn.execute("INSERT INTO schema_version(version) VALUES (2)")
+    conn.execute(
+        "INSERT INTO jobs(id, url, kind, status, format_pref, output_dir, "
+        "created_at, force_overwrite) "
+        "VALUES ('x', 'u', 'video', 'done', 'best', '/o', 1, 0)"
+    )
+    migrate(conn)
+    row = conn.execute(
+        "SELECT id, subtitles FROM jobs WHERE id='x'"
+    ).fetchone()
+    assert row["id"] == "x"
+    assert row["subtitles"] == 0
+
+
 def test_migrate_v1_to_v2_preserves_existing_rows(tmp_path: Path) -> None:
     """A DB at schema v1 with rows must migrate to v2 without losing them.
     The new column should default to 0 (False)."""

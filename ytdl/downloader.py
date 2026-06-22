@@ -136,6 +136,10 @@ class DownloadContext:
     on_progress: Callable[[dict[str, Any]], None]
     cancel_flag: Callable[[], bool]
     throttle_interval_s: float = 1.0
+    # Languages to request when a job opts into subtitles. Threaded through
+    # DownloadContext (rather than _build_ydl_options' signature) so adding
+    # more knobs later doesn't keep growing the function parameter list.
+    subtitle_langs: tuple[str, ...] | list[str] = ("en",)
 
 
 @dataclass
@@ -188,6 +192,24 @@ def _build_ydl_options(job, ctx: DownloadContext, throttle: ProgressThrottle) ->
     if getattr(job, "force_overwrite", False):
         opts["overwrites"] = True
         opts["continuedl"] = False
+    if getattr(job, "subtitles", False):
+        # Fetch real subtitles only — writeautomaticsub=True would pull the
+        # machine-generated CC track, which is markedly lower quality.
+        #
+        # FFmpegEmbedSubtitle embeds the downloaded .vtt into the MP4 and,
+        # by default, deletes the sidecar after embedding. The UI promises
+        # both an embedded track AND a sidecar .vtt for Plex/Jellyfin
+        # libraries, so set already_have_subtitle=True to keep the file
+        # on disk (matches yt-dlp's `--embed-subs` CLI behavior when
+        # subtitles are explicitly written).
+        # Requires ffmpeg on PATH (which we already require for merging).
+        opts["writesubtitles"] = True
+        opts["writeautomaticsub"] = False
+        opts["subtitleslangs"] = list(ctx.subtitle_langs) or ["en"]
+        opts["postprocessors"] = [
+            *opts.get("postprocessors", []),
+            {"key": "FFmpegEmbedSubtitle", "already_have_subtitle": True},
+        ]
     return opts
 
 

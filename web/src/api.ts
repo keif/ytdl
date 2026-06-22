@@ -25,6 +25,7 @@ export interface Job {
   eta_s: number | null;
   error: string | null;
   force_overwrite: boolean;
+  subtitles: boolean;
   attempts: number;
   created_at: number;
   started_at: number | null;
@@ -48,11 +49,19 @@ export async function getJob(id: string): Promise<Job> {
   return r.json();
 }
 
-export async function createJob(url: string, formatPref?: string): Promise<Job> {
+export async function createJob(
+  url: string,
+  formatPref?: string,
+  subtitles?: boolean,
+): Promise<Job> {
+  const body: Record<string, unknown> = { url, format_pref: formatPref };
+  // Only send the field when the caller passed an explicit value — the
+  // server treats `undefined`/missing as "use the configured default".
+  if (subtitles !== undefined) body.subtitles = subtitles;
   const r = await fetch("/jobs", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ url, format_pref: formatPref }),
+    body: JSON.stringify(body),
   });
   if (!r.ok) {
     const detail = await r.json().catch(() => ({}));
@@ -63,12 +72,15 @@ export async function createJob(url: string, formatPref?: string): Promise<Job> 
 
 export async function createJobsFromPick(
   urls: string[],
-  formatPref?: string
+  formatPref?: string,
+  subtitles?: boolean,
 ): Promise<Job> {
+  const body: Record<string, unknown> = { urls, format_pref: formatPref };
+  if (subtitles !== undefined) body.subtitles = subtitles;
   const r = await fetch("/jobs", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ urls, format_pref: formatPref }),
+    body: JSON.stringify(body),
   });
   if (!r.ok) {
     const detail = await r.json().catch(() => ({}));
@@ -180,6 +192,7 @@ export interface StatusResponse {
   cookies_source: "explicit" | "autodetect" | "none";
   deno: BinaryStatus;
   ffmpeg: BinaryStatus;
+  subtitles_default: boolean;
 }
 
 export async function fetchStatus(): Promise<StatusResponse> {

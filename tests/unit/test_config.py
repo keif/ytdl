@@ -78,6 +78,83 @@ def test_load_config_sets_cookies_source_explicit_when_toml_provided(
     assert cfg.cookies_source == "explicit"
 
 
+def test_default_subtitle_langs_for_english_locale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ytdl.config import _default_subtitle_langs
+
+    monkeypatch.delenv("LC_ALL", raising=False)
+    monkeypatch.delenv("LC_MESSAGES", raising=False)
+    monkeypatch.setenv("LANG", "en_US.UTF-8")
+    assert _default_subtitle_langs() == ["en"]
+
+
+def test_default_subtitle_langs_for_spanish_locale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ytdl.config import _default_subtitle_langs
+
+    monkeypatch.delenv("LC_ALL", raising=False)
+    monkeypatch.delenv("LC_MESSAGES", raising=False)
+    monkeypatch.setenv("LANG", "es_ES.UTF-8")
+    # English fallback is always appended even for non-EN locales.
+    assert _default_subtitle_langs() == ["es", "en"]
+
+
+def test_default_subtitle_langs_when_lang_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ytdl.config import _default_subtitle_langs
+
+    monkeypatch.delenv("LC_ALL", raising=False)
+    monkeypatch.delenv("LC_MESSAGES", raising=False)
+    monkeypatch.delenv("LANG", raising=False)
+    assert _default_subtitle_langs() == ["en"]
+
+
+def test_default_subtitle_langs_treats_c_locale_as_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """LANG=C.UTF-8 is the build/CI fallback locale; treat it as 'no
+    locale info' and ship plain ['en']."""
+    from ytdl.config import _default_subtitle_langs
+
+    monkeypatch.delenv("LC_ALL", raising=False)
+    monkeypatch.delenv("LC_MESSAGES", raising=False)
+    monkeypatch.setenv("LANG", "C.UTF-8")
+    assert _default_subtitle_langs() == ["en"]
+
+
+def test_subtitle_langs_env_override_wins(
+    tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("YTDL_SUBTITLE_LANGS", "en, es, fr ")
+    cfg = load_config()
+    assert cfg.subtitle_langs == ("en", "es", "fr")
+
+
+def test_subtitles_default_env_override(
+    tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("YTDL_SUBTITLES_DEFAULT", "true")
+    cfg = load_config()
+    assert cfg.subtitles_default is True
+
+
+def test_subtitles_default_loads_from_toml(tmp_data_dir: Path) -> None:
+    cfg_path = tmp_data_dir / "config" / "ytdl" / "config.toml"
+    cfg_path.parent.mkdir(parents=True)
+    cfg_path.write_text(
+        '''
+subtitles_default = true
+subtitle_langs = ["en", "ja"]
+'''
+    )
+    cfg = load_config()
+    assert cfg.subtitles_default is True
+    assert cfg.subtitle_langs == ("en", "ja")
+
+
 def test_load_config_sets_cookies_source_autodetect_or_none(
     tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

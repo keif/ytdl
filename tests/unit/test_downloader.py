@@ -298,6 +298,59 @@ def test_build_ydl_options_sets_overwrites_when_force_overwrite(tmp_path: Path) 
     assert opts.get("continuedl") is False
 
 
+def test_build_ydl_options_enables_subtitles_when_flag_set(tmp_path: Path) -> None:
+    from ytdl.downloader import _build_ydl_options
+
+    job = Job(
+        id="01",
+        url="https://yt/x",
+        kind=JobKind.VIDEO,
+        parent_job_id=None,
+        status=JobStatus.RUNNING,
+        format_pref="best",
+        output_dir=str(tmp_path),
+        subtitles=True,
+    )
+    ctx = DownloadContext(
+        ydl_cls=None,
+        cookies_browser=None,
+        on_progress=lambda d: None,
+        cancel_flag=lambda: False,
+        subtitle_langs=("es", "en"),
+    )
+    opts = _build_ydl_options(job, ctx, ProgressThrottle())
+    assert opts.get("writesubtitles") is True
+    # Auto-CC is markedly lower quality; only fetch real subtitles.
+    assert opts.get("writeautomaticsub") is False
+    assert opts.get("subtitleslangs") == ["es", "en"]
+    # Postprocessors must include FFmpegEmbedSubtitle so the .vtt is baked
+    # into the MP4. `already_have_subtitle=True` keeps the sidecar file on
+    # disk (the postprocessor's default deletes it after embedding).
+    embed_pp = next(
+        (p for p in opts.get("postprocessors", []) if p.get("key") == "FFmpegEmbedSubtitle"),
+        None,
+    )
+    assert embed_pp is not None
+    assert embed_pp.get("already_have_subtitle") is True
+
+
+def test_build_ydl_options_omits_subtitle_keys_by_default(tmp_path: Path) -> None:
+    from ytdl.downloader import _build_ydl_options
+
+    job = _make_job(tmp_path)
+    ctx = DownloadContext(
+        ydl_cls=None,
+        cookies_browser=None,
+        on_progress=lambda d: None,
+        cancel_flag=lambda: False,
+    )
+    opts = _build_ydl_options(job, ctx, ProgressThrottle())
+    assert "writesubtitles" not in opts
+    assert "writeautomaticsub" not in opts
+    assert "subtitleslangs" not in opts
+    assert "postprocessors" not in opts
+
+
 def test_build_ydl_options_omits_overwrites_by_default(tmp_path: Path) -> None:
     from ytdl.downloader import _build_ydl_options
 

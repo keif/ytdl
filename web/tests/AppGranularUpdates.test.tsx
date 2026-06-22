@@ -16,6 +16,7 @@ function statusResponse() {
       cookies_source: "autodetect",
       deno: { present: true, path: "/usr/bin/deno" },
       ffmpeg: { present: true, path: "/usr/bin/ffmpeg" },
+      subtitles_default: false,
     }),
     { status: 200, headers: { "content-type": "application/json" } },
   );
@@ -48,6 +49,7 @@ function singleJob(overrides: Record<string, unknown> = {}) {
     eta_s: null,
     error: null,
     force_overwrite: false,
+    subtitles: false,
     attempts: 1,
     created_at: Date.now() - 5000,
     started_at: Date.now() - 4000,

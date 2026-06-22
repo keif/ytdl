@@ -30,6 +30,10 @@ class JobCreate(BaseModel):
         default=None, min_length=1, max_length=_MAX_PICK_URLS
     )
     format_pref: str | None = None
+    # None falls back to the server's `subtitles_default` config; an explicit
+    # bool overrides it. Lets the UI checkbox show a tri-state default
+    # ("use config preference") without forcing a value on every POST.
+    subtitles: bool | None = None
 
     @field_validator("url")
     @classmethod
@@ -77,6 +81,7 @@ class JobOut(BaseModel):
     eta_s: int | None
     error: str | None
     force_overwrite: bool
+    subtitles: bool
     attempts: int
     created_at: int
     started_at: int | None

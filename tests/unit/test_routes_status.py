@@ -33,11 +33,30 @@ def test_status_returns_cookies_and_runtime_keys(client: TestClient) -> None:
         "cookies_source",
         "deno",
         "ffmpeg",
+        "subtitles_default",
     }
     for key in ("deno", "ffmpeg"):
         assert set(body[key].keys()) == {"present", "path"}
         assert isinstance(body[key]["present"], bool)
         assert body[key]["path"] is None or isinstance(body[key]["path"], str)
+    assert isinstance(body["subtitles_default"], bool)
+
+
+def test_status_surfaces_subtitles_default(tmp_path: Path) -> None:
+    """When the config opts in by default, /status reflects that so the UI
+    can pre-check the Subtitles checkbox."""
+    cfg = Config(
+        output_dir=tmp_path / "out",
+        db_path=tmp_path / "ytdl.db",
+        workers=0,
+        cookies_browser=None,
+        cookies_source="none",
+        default_format="best",
+        subtitles_default=True,
+    )
+    c = TestClient(build_app(cfg))
+    body = c.get("/status").json()
+    assert body["subtitles_default"] is True
 
 
 def test_status_reflects_missing_deno(

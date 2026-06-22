@@ -91,7 +91,13 @@ def _preview_entries(url: str, cookies_browser: str | None) -> tuple[str, list[d
 
 
 def _download_one(
-    url: str, *, format_pref: str, output_dir: Path, cookies_browser: str | None
+    url: str,
+    *,
+    format_pref: str,
+    output_dir: Path,
+    cookies_browser: str | None,
+    subtitles: bool = False,
+    subtitle_langs: tuple[str, ...] | list[str] = ("en",),
 ) -> None:
     """Synchronously download a single URL, printing percent progress."""
     from yt_dlp import YoutubeDL  # late import to keep CLI startup snappy
@@ -109,6 +115,7 @@ def _download_one(
         status=JobStatus.RUNNING,
         format_pref=format_pref,
         output_dir=str(output_dir),
+        subtitles=subtitles,
     )
 
     last_pct = -1
@@ -128,6 +135,7 @@ def _download_one(
         cookies_browser=cookies_browser,
         on_progress=on_progress,
         cancel_flag=lambda: False,
+        subtitle_langs=tuple(subtitle_langs) or ("en",),
     )
     console.print(f"[bold]Downloading[/bold] {url}")
     result = download(job, ctx)
@@ -147,6 +155,12 @@ def get(
         help="When URL is a playlist, download only these 1-based entries "
         "(e.g. '1,3,5-9'). Without --pick the entire playlist is downloaded.",
     ),
+    subtitles: bool | None = typer.Option(
+        None,
+        "--subs/--no-subs",
+        help="Download + embed subtitles (locale + EN). "
+        "Without this flag, the `subtitles_default` config value applies.",
+    ),
 ) -> None:
     """Download a URL directly (synchronous, no server).
 
@@ -157,6 +171,7 @@ def get(
     """
     cfg = load_config()
     out = output_dir or cfg.output_dir
+    subs = subtitles if subtitles is not None else cfg.subtitles_default
 
     if pick is None:
         _download_one(
@@ -164,6 +179,8 @@ def get(
             format_pref=format_pref,
             output_dir=out,
             cookies_browser=cfg.cookies_browser,
+            subtitles=subs,
+            subtitle_langs=cfg.subtitle_langs,
         )
         return
 
@@ -185,6 +202,8 @@ def get(
             format_pref=format_pref,
             output_dir=out,
             cookies_browser=cfg.cookies_browser,
+            subtitles=subs,
+            subtitle_langs=cfg.subtitle_langs,
         )
 
 
@@ -335,6 +354,12 @@ def queue_add(
         "(e.g. '1,3,5-9'). Without --pick, the URL is enqueued as-is and "
         "the worker handles playlist expansion.",
     ),
+    subtitles: bool | None = typer.Option(
+        None,
+        "--subs/--no-subs",
+        help="Download + embed subtitles (locale + EN). "
+        "Without this flag, the `subtitles_default` config value applies.",
+    ),
 ) -> None:
     """Enqueue a URL for the worker pool to pick up.
 
@@ -344,6 +369,7 @@ def queue_add(
     the picked entries as standalone VIDEO jobs.
     """
     cfg = load_config()
+    subs = subtitles if subtitles is not None else cfg.subtitles_default
     conn = connect(cfg.db_path)
     migrate(conn)
     try:
@@ -354,6 +380,7 @@ def queue_add(
                 kind=JobKind.VIDEO,
                 format_pref=format_pref,
                 output_dir=str(cfg.output_dir),
+                subtitles=subs,
             )
             console.print(f"queued [bold]{job_id}[/bold]")
             return
@@ -376,6 +403,7 @@ def queue_add(
                         kind=JobKind.VIDEO,
                         format_pref=format_pref,
                         output_dir=str(cfg.output_dir),
+                        subtitles=subs,
                     )
                 )
             conn.execute("COMMIT")

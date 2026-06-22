@@ -113,7 +113,18 @@ export default function App() {
     const issued = refreshIssuedSeq.current + 1;
     refreshIssuedSeq.current = issued;
     const before = snapshotLifecycleWrites();
-    const list = await listJobs();
+    let list: { jobs: Job[]; total: number };
+    try {
+      list = await listJobs();
+    } catch (e) {
+      // Roll back our claim on the issued seq so an earlier successful
+      // refresh that's still in flight can still write — its response
+      // is the only data the user is going to see.
+      if (refreshIssuedSeq.current === issued) {
+        refreshIssuedSeq.current = issued - 1;
+      }
+      throw e;
+    }
     if (refreshIssuedSeq.current !== issued) {
       // A newer refresh() was kicked off and is responsible for the
       // post-state. Drop this older response so we don't roll back the
@@ -126,13 +137,34 @@ export default function App() {
 
       // 1. Walk the refresh payload, preferring in-state rows whose
       //    lifecycle write COMMITTED during the refresh (i.e., the
-      //    in-state row is newer than what /jobs gave us).
+      //    in-state row is newer than what /jobs gave us). Also
+      //    preserve in-flight progress on running rows — the live
+      //    event stream can be ahead of the throttled DB progress
+      //    that /jobs surfaces.
       const merged = list.jobs.map((row) => {
         const beforeWrites = before.get(row.id) ?? 0;
         const nowWrites = lifecycleWritten.current.get(row.id) ?? 0;
         if (nowWrites > beforeWrites) {
           const live = prevById.get(row.id);
           if (live) return live;
+        }
+        // For running rows, preserve the more-advanced progress fields
+        // that may have come from live SSE events while /jobs was
+        // fetching.
+        if (row.status === "running") {
+          const live = prevById.get(row.id);
+          if (live && live.status === "running") {
+            return {
+              ...row,
+              bytes_done:
+                (live.bytes_done ?? 0) > (row.bytes_done ?? 0)
+                  ? live.bytes_done
+                  : row.bytes_done,
+              filesize_bytes: live.filesize_bytes ?? row.filesize_bytes,
+              speed_bps: live.speed_bps ?? row.speed_bps,
+              eta_s: live.eta_s ?? row.eta_s,
+            };
+          }
         }
         return row;
       });

@@ -19,6 +19,7 @@ import {
 import { SubmitForm } from "./components/SubmitForm";
 import { PreviewVideo } from "./components/PreviewVideo";
 import { PreviewPanel } from "./components/PreviewPanel";
+import { AutoSubmitBanner } from "./components/AutoSubmitBanner";
 import { JobList } from "./components/JobList";
 import { useJobsStream } from "./hooks/useJobsStream";
 
@@ -64,6 +65,23 @@ export default function App() {
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [clearable, setClearable] = useState(0);
+  // Paste-and-go countdown. `null` = not counting (cancelled, completed, or
+  // not applicable for the current preview). `{remaining: N}` = N seconds
+  // left before the job auto-submits. The interval handle lives in a ref so
+  // any code path (URL edit, Cancel click, playlist transition, unmount) can
+  // clear it without going through state.
+  const [autoSubmit, setAutoSubmit] = useState<{ remaining: number } | null>(
+    null,
+  );
+  const autoSubmitInterval = useRef<number | null>(null);
+  // The countdown effect captures submitSingle in its closure at scheduling
+  // time. If the user toggles audio-only/subtitles/output-dir during the
+  // window, we want the LATEST submit handler, not a stale one. The ref is
+  // refreshed on every render below so the timer's tick handler dereferences
+  // the freshest function.
+  const submitSingleRef = useRef<(entryUrl: string) => Promise<void>>(
+    async () => {},
+  );
 
   const previewDebounce = useRef<number | null>(null);
   const previewAbort = useRef<AbortController | null>(null);
@@ -145,6 +163,23 @@ export default function App() {
         .then((r) => setClearable(r.clearable))
         .catch(() => setClearable(0)),
     ]);
+  }
+
+  /**
+   * Tear down any in-progress auto-submit countdown.
+   *
+   * Safe to call when no countdown is running — the interval ref guards the
+   * clear. Used from: the Cancel button, URL-edit reset path, playlist
+   * picker mount (defensive — if a single-video countdown happened to be
+   * mid-tick when /preview re-resolved as a playlist), and the App unmount
+   * cleanup.
+   */
+  function cancelAutoSubmit() {
+    if (autoSubmitInterval.current !== null) {
+      window.clearInterval(autoSubmitInterval.current);
+      autoSubmitInterval.current = null;
+    }
+    setAutoSubmit(null);
   }
 
   // ---- Preview fetch on URL change ----
@@ -330,6 +365,10 @@ export default function App() {
       setSubmitting(false);
     }
   }
+  // Keep the ref pointed at the latest closure so the auto-submit timer
+  // always uses the user's most-recent audio_only/subtitles/output_dir
+  // selections, even if they were toggled mid-countdown.
+  submitSingleRef.current = submitSingle;
 
   async function submitPickedUrls(urls: string[]) {
     setSubmitting(true);
@@ -365,6 +404,67 @@ export default function App() {
     ready && ready.kind === "playlist" && ready.entries.length > 0
       ? ready.entries
       : null;
+
+  // ---- Auto-submit countdown ----
+  // When a single-video preview resolves and the server-configured delay is
+  // positive, start a 1Hz countdown. On zero, submitSingle() fires through
+  // the same code path the manual Download button uses (audio_only,
+  // subtitles, output_dir all apply). The interval lives in a ref so any
+  // other code path can cancel it. We deliberately use setInterval over
+  // setTimeout-with-Date-arithmetic: the banner reads `remaining` directly
+  // from state, so the tick IS the display update.
+  useEffect(() => {
+    // Defensive: tear down any prior interval before deciding whether to
+    // start a fresh one. Effect re-runs cover URL edits inside the same
+    // mount; the dep array tells React when.
+    if (autoSubmitInterval.current !== null) {
+      window.clearInterval(autoSubmitInterval.current);
+      autoSubmitInterval.current = null;
+    }
+    const delay = status?.autosubmit_delay_s ?? 0;
+    if (!singleEntry || delay <= 0) {
+      // Either preview hasn't resolved to a single video, or the feature
+      // is disabled via config. Make sure the banner is not visible.
+      if (autoSubmit !== null) setAutoSubmit(null);
+      return;
+    }
+    // Capture the URL at countdown-start so a late tick (interleaved with
+    // a URL edit that hadn't yet been observed by the effect) can't
+    // submit a stale value.
+    const entryUrl = singleEntry.url;
+    setAutoSubmit({ remaining: delay });
+    autoSubmitInterval.current = window.setInterval(() => {
+      setAutoSubmit((prev) => {
+        if (prev === null) return null;
+        const next = prev.remaining - 1;
+        if (next <= 0) {
+          if (autoSubmitInterval.current !== null) {
+            window.clearInterval(autoSubmitInterval.current);
+            autoSubmitInterval.current = null;
+          }
+          // submitSingle() handles its own try/catch and clears the URL
+          // on success; failures surface via submitError. Going through
+          // the ref guarantees we use the freshest closure (with the
+          // user's latest audio_only/subtitles/output_dir values).
+          submitSingleRef.current(entryUrl).catch(() => {});
+          return null;
+        }
+        return { remaining: next };
+      });
+    }, 1000);
+
+    return () => {
+      if (autoSubmitInterval.current !== null) {
+        window.clearInterval(autoSubmitInterval.current);
+        autoSubmitInterval.current = null;
+      }
+    };
+    // We intentionally key off the entry URL (not the entry object) so the
+    // effect only restarts when the user actually moves to a different
+    // video. `status?.autosubmit_delay_s` covers the case where /status
+    // resolves after the preview already did.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [singleEntry?.url, status?.autosubmit_delay_s]);
 
   return (
     <div className="min-h-screen p-6 max-w-4xl mx-auto flex flex-col gap-6">
@@ -440,6 +540,10 @@ export default function App() {
           if (!isFreshPaste && !isTypingExtension) {
             setAudioOnly(false);
             setOutputDir("");
+            // The new URL invalidates the in-flight countdown — the
+            // preview is now stale and a fresh countdown (if any) will
+            // start when the new preview resolves.
+            cancelAutoSubmit();
           }
           setUrl(value);
         }}
@@ -462,6 +566,13 @@ export default function App() {
         <p className="text-xs text-red-400">
           Could not preview: {preview.message}
         </p>
+      )}
+
+      {autoSubmit !== null && (
+        <AutoSubmitBanner
+          remaining={autoSubmit.remaining}
+          onCancel={cancelAutoSubmit}
+        />
       )}
 
       {singleEntry && (

@@ -41,6 +41,11 @@ class Config:
     # default helper reads $LANG and prepends the user's locale; English is
     # always included as a fallback because most uploads only carry 'en'.
     subtitle_langs: tuple[str, ...] = ("en",)
+    # Seconds the UI waits after a single-video preview resolves before
+    # auto-submitting the job. The countdown banner ticks this down and the
+    # user can cancel at any time during the window. A value of 0 disables
+    # the feature entirely — the user must click Download manually.
+    autosubmit_delay_s: int = 5
 
 
 def _default_output_dir() -> Path:
@@ -126,6 +131,13 @@ def _env_overrides() -> dict:
         parsed = _parse_subtitle_langs_env(v)
         if parsed:
             out["subtitle_langs"] = parsed
+    if v := os.environ.get("YTDL_AUTOSUBMIT_DELAY_S"):
+        try:
+            out["autosubmit_delay_s"] = int(v)
+        except ValueError as exc:
+            raise ValueError(
+                f"invalid YTDL_AUTOSUBMIT_DELAY_S={v!r}: must be an integer"
+            ) from exc
     return out
 
 
@@ -166,6 +178,9 @@ def load_config() -> Config:
             subtitle_langs = _default_subtitle_langs()
     else:
         subtitle_langs = _default_subtitle_langs()
+    autosubmit_delay_s = int(raw.get("autosubmit_delay_s", 5))
+    if autosubmit_delay_s < 0:
+        raise ValueError("autosubmit_delay_s must be >= 0")
     return Config(
         output_dir=Path(raw.get("output_dir", _default_output_dir())),
         db_path=Path(raw.get("db_path", _default_db_path())),
@@ -176,4 +191,5 @@ def load_config() -> Config:
         cookies_source=cookies_source,
         subtitles_default=subtitles_default,
         subtitle_langs=tuple(subtitle_langs),
+        autosubmit_delay_s=autosubmit_delay_s,
     )

@@ -200,6 +200,10 @@ export interface StatusResponse {
   // Server-side default output directory. Surfaced so the "Save to" override
   // in the submit form can show it as a placeholder when blank.
   output_dir: string;
+  // Seconds to wait after a single-video preview resolves before
+  // auto-submitting. The UI reads this on mount so the countdown banner uses
+  // the configured default. A value of 0 disables the auto-submit flow.
+  autosubmit_delay_s: number;
 }
 
 export async function fetchStatus(): Promise<StatusResponse> {

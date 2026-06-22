@@ -439,24 +439,29 @@ export default function App() {
     // submit a stale value.
     const entryUrl = singleEntry.url;
     setAutoSubmit({ remaining: delay });
+    // Track remaining outside React state so the interval callback is
+    // pure relative to the state updater. With the submit side effect
+    // inside a setAutoSubmit() updater, React.StrictMode's double-
+    // invocation in dev would fire the POST twice. Keep the updater
+    // pure (return-only) and drive the side effect from the interval
+    // callback itself.
+    let ticksRemaining = delay;
     autoSubmitInterval.current = window.setInterval(() => {
-      setAutoSubmit((prev) => {
-        if (prev === null) return null;
-        const next = prev.remaining - 1;
-        if (next <= 0) {
-          if (autoSubmitInterval.current !== null) {
-            window.clearInterval(autoSubmitInterval.current);
-            autoSubmitInterval.current = null;
-          }
-          // submitSingle() handles its own try/catch and clears the URL
-          // on success; failures surface via submitError. Going through
-          // the ref guarantees we use the freshest closure (with the
-          // user's latest audio_only/subtitles/output_dir values).
-          submitSingleRef.current(entryUrl).catch(() => {});
-          return null;
+      ticksRemaining -= 1;
+      if (ticksRemaining <= 0) {
+        if (autoSubmitInterval.current !== null) {
+          window.clearInterval(autoSubmitInterval.current);
+          autoSubmitInterval.current = null;
         }
-        return { remaining: next };
-      });
+        setAutoSubmit(null);
+        // submitSingle() handles its own try/catch and clears the URL
+        // on success; failures surface via submitError. Going through
+        // the ref guarantees we use the freshest closure (with the
+        // user's latest audio_only/subtitles/output_dir values).
+        submitSingleRef.current(entryUrl).catch(() => {});
+        return;
+      }
+      setAutoSubmit({ remaining: ticksRemaining });
     }, 1000);
 
     return () => {

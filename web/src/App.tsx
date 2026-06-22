@@ -400,11 +400,13 @@ export default function App() {
       <SubmitForm
         url={url}
         onUrlChange={(value) => {
-          // Audio-only is per-paste intent — when the URL clears (manually
-          // or programmatically), the next paste should start with the
-          // dropdown selection again, not silently inherit a previous
-          // session's audio-only choice.
-          if (value === "") setAudioOnly(false);
+          // Audio-only is per-paste intent. Reset on any change that
+          // isn't a strict extension of the existing text — i.e. clear,
+          // select-all-paste-replace, or backspace-shorten all count as
+          // "the user is moving to a new URL." A single appended
+          // character (the typing case) preserves the checkbox so a
+          // mid-typing user doesn't lose their selection.
+          if (!value.startsWith(url)) setAudioOnly(false);
           setUrl(value);
         }}
         format={format}

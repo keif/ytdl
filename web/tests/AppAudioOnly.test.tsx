@@ -170,6 +170,47 @@ describe("App audio-only toggle", () => {
     expect(postedBodies[0]).toMatchObject({ format_pref: "audio_only" });
   });
 
+  it("resets audio-only when one URL is replaced with another (select-all-paste)", async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByRole("checkbox", { name: /audio only/i })).toBeInTheDocument();
+    });
+
+    const audioCheckbox = screen.getByRole("checkbox", { name: /audio only/i }) as HTMLInputElement;
+    const input = screen.getByPlaceholderText(/Paste a YouTube URL/i) as HTMLInputElement;
+
+    // Paste a URL, tick audio-only, then replace the URL entirely.
+    fireEvent.change(input, { target: { value: "https://yt/x" } });
+    await act(async () => {
+      audioCheckbox.click();
+    });
+    expect(audioCheckbox.checked).toBe(true);
+
+    // Select-all paste-replace — new value does NOT extend the previous.
+    fireEvent.change(input, { target: { value: "https://yt/y" } });
+
+    expect(audioCheckbox.checked).toBe(false);
+  });
+
+  it("preserves audio-only when the user appends to the existing URL", async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByRole("checkbox", { name: /audio only/i })).toBeInTheDocument();
+    });
+
+    const audioCheckbox = screen.getByRole("checkbox", { name: /audio only/i }) as HTMLInputElement;
+    const input = screen.getByPlaceholderText(/Paste a YouTube URL/i) as HTMLInputElement;
+
+    fireEvent.change(input, { target: { value: "https://yt/" } });
+    await act(async () => {
+      audioCheckbox.click();
+    });
+    // Type more characters — a strict extension of the current text.
+    fireEvent.change(input, { target: { value: "https://yt/abc" } });
+
+    expect(audioCheckbox.checked).toBe(true);
+  });
+
   it("resets audio-only when the URL input is manually cleared", async () => {
     render(<App />);
     await waitFor(() => {

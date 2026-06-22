@@ -90,6 +90,7 @@ class Supervisor:
         workers: int,
         bus: EventsBus,
         cookies_browser: str | None,
+        subtitle_langs: tuple[str, ...] | list[str] = ("en",),
         downloader: Downloader | None = None,
         probe: Callable[[str], dict] | None = None,
         retry_delays_s: tuple[int, ...] = (2, 8),
@@ -99,6 +100,7 @@ class Supervisor:
         self._n = workers
         self._bus = bus
         self._cookies = cookies_browser
+        self._subtitle_langs: tuple[str, ...] = tuple(subtitle_langs) or ("en",)
         self._download: Downloader = downloader or _default_download_adapter
         if probe is not None:
             self._probe: Callable[[str], dict] = probe
@@ -282,6 +284,11 @@ class Supervisor:
                             # what invoke yt-dlp; without this, the parent's
                             # flag would land on a row that never downloads.
                             force_overwrite=job.force_overwrite,
+                            # Same reasoning for the subtitles flag — the
+                            # children are the rows that actually drive
+                            # yt-dlp, so the parent's opt-in has to travel
+                            # with them.
+                            subtitles=job.subtitles,
                         )
                         enqueued_child_ids.append(child_id)
                         if parent_canceled_pre:
@@ -539,6 +546,7 @@ class Supervisor:
             cookies_browser=self._cookies,
             on_progress=on_progress,
             cancel_flag=cancel_flag,
+            subtitle_langs=self._subtitle_langs,
         )
 
         Path(job.output_dir).mkdir(parents=True, exist_ok=True)

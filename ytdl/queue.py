@@ -39,6 +39,7 @@ def _row_to_job(row: sqlite3.Row) -> Job:
         eta_s=row["eta_s"],
         error=row["error"],
         force_overwrite=bool(row["force_overwrite"]),
+        subtitles=bool(row["subtitles"]),
         attempts=row["attempts"],
         created_at=row["created_at"],
         started_at=row["started_at"],
@@ -68,14 +69,15 @@ def enqueue(
     output_dir: str,
     parent_job_id: str | None = None,
     force_overwrite: bool = False,
+    subtitles: bool = False,
 ) -> str:
     job_id = new_ulid()
     conn.execute(
         """
         INSERT INTO jobs(
             id, url, kind, parent_job_id, status, format_pref, output_dir,
-            attempts, created_at, force_overwrite
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+            attempts, created_at, force_overwrite, subtitles
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
         """,
         (
             job_id,
@@ -87,6 +89,7 @@ def enqueue(
             output_dir,
             _now_ms(),
             int(force_overwrite),
+            int(subtitles),
         ),
     )
     record_event(conn, job_id, "enqueued", {"url": url, "kind": kind.value})
@@ -459,6 +462,7 @@ def retry_job(
     job_id: str,
     *,
     force_overwrite: bool = False,
+    subtitles: bool | None = None,
 ) -> str | None:
     """Create a new PENDING job from an existing terminal one.
 
@@ -474,10 +478,14 @@ def retry_job(
     the "Re-download" action; the plain ``Retry`` button leaves the flag false
     (so re-running a DONE job is effectively a no-op unless the file is
     missing).
+
+    ``subtitles`` defaults to ``None`` — inherit from the source row so a
+    retry/redownload preserves the original opt-in. Pass an explicit bool to
+    override (used if a future caller wants to flip the flag at retry time).
     """
     row = conn.execute(
-        "SELECT url, format_pref, output_dir, kind, status, parent_job_id "
-        "FROM jobs WHERE id = ?",
+        "SELECT url, format_pref, output_dir, kind, status, parent_job_id, "
+        "subtitles FROM jobs WHERE id = ?",
         (job_id,),
     ).fetchone()
     if row is None:
@@ -497,6 +505,7 @@ def retry_job(
     # correctly via cascade. Plain retry (no force) is still allowed.
     if force_overwrite and row["parent_job_id"] is not None:
         return None
+    resolved_subs = bool(row["subtitles"]) if subtitles is None else subtitles
     # Always re-enqueue as VIDEO. The worker re-detects playlists by probing
     # the URL; restoring the original PLAYLIST kind would skip detection and
     # the download path would choke on a playlist URL as if it were a video.
@@ -508,6 +517,7 @@ def retry_job(
         output_dir=row["output_dir"],
         parent_job_id=None,
         force_overwrite=force_overwrite,
+        subtitles=resolved_subs,
     )
 
 

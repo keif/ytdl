@@ -36,6 +36,7 @@ def build_app(config: Config) -> FastAPI:
                 workers=config.workers,
                 bus=bus,
                 cookies_browser=config.cookies_browser,
+                subtitle_langs=config.subtitle_langs,
             )
             await supervisor.start()
             app.state.supervisor = supervisor
@@ -85,6 +86,7 @@ def build_app(config: Config) -> FastAPI:
             "cookies_source": cfg.cookies_source,
             "deno": {"present": deno.present, "path": deno.path},
             "ffmpeg": {"present": ffmpeg.present, "path": ffmpeg.path},
+            "subtitles_default": cfg.subtitles_default,
         }
 
     # Serve the built Vite bundle when present. The Dockerfile copies the

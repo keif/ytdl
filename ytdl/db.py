@@ -8,7 +8,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _MIGRATIONS: dict[int, list[str]] = {
     1: [
@@ -57,6 +57,14 @@ _MIGRATIONS: dict[int, list[str]] = {
         # when the previous file was corrupt. The "Re-download" action sets
         # this on the cloned job.
         "ALTER TABLE jobs ADD COLUMN force_overwrite INTEGER NOT NULL DEFAULT 0",
+    ],
+    3: [
+        # Per-job opt-in subtitle download. When set, the worker tells yt-dlp
+        # to fetch real subtitles (writesubtitles=True; writeautomaticsub=False
+        # so we don't pull the low-quality auto-CC track), embed them in the
+        # MP4, and also save a sidecar .vtt the user's media library can pick
+        # up. Defaults to 0 so existing rows stay opt-out.
+        "ALTER TABLE jobs ADD COLUMN subtitles INTEGER NOT NULL DEFAULT 0",
     ],
 }
 

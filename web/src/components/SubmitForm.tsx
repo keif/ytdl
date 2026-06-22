@@ -3,6 +3,8 @@ interface Props {
   onUrlChange: (url: string) => void;
   format: string;
   onFormatChange: (format: string) => void;
+  subtitles: boolean;
+  onSubtitlesChange: (value: boolean) => void;
 }
 
 /**
@@ -11,7 +13,14 @@ interface Props {
  * appropriate preview surface (inline single-video card or playlist picker)
  * below this form. The actual "Download" action lives on those surfaces.
  */
-export function SubmitForm({ url, onUrlChange, format, onFormatChange }: Props) {
+export function SubmitForm({
+  url,
+  onUrlChange,
+  format,
+  onFormatChange,
+  subtitles,
+  onSubtitlesChange,
+}: Props) {
   return (
     <div className="flex gap-2 flex-wrap items-center">
       <input
@@ -30,6 +39,18 @@ export function SubmitForm({ url, onUrlChange, format, onFormatChange }: Props) 
         <option value="720p">720p</option>
         <option value="audio_only">Audio only</option>
       </select>
+      <label
+        className="flex items-center gap-1.5 text-sm text-neutral-300 cursor-pointer select-none"
+        title="Download real subtitles, embed them in the MP4, and save a sidecar .vtt"
+      >
+        <input
+          type="checkbox"
+          checked={subtitles}
+          onChange={(e) => onSubtitlesChange(e.target.checked)}
+        />
+        <span>Subtitles</span>
+        <span className="text-xs text-neutral-500">(your locale + EN)</span>
+      </label>
     </div>
   );
 }

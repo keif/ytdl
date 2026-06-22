@@ -22,6 +22,7 @@ const baseJob: Job = {
   eta_s: 5,
   error: null,
   force_overwrite: false,
+  subtitles: false,
   attempts: 1,
   created_at: 0,
   started_at: 0,

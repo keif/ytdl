@@ -42,6 +42,12 @@ export default function App() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [url, setUrl] = useState("");
   const [format, setFormat] = useState("best");
+  // Tri-state at the server (None/true/false), but a checkbox can only be
+  // on/off. We mirror the server default from /status into local state at
+  // mount so the UI matches the user's config without re-reading it on
+  // every submit.
+  const [subtitles, setSubtitles] = useState(false);
+  const subtitlesUserOverride = useRef(false);
   const [preview, setPreview] = useState<PreviewState>({ kind: "idle" });
   const [singleEnriched, setSingleEnriched] = useState<EnrichedEntry | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -220,8 +226,23 @@ export default function App() {
   // Fetch cookies status once at mount so the header can show what yt-dlp
   // will read at job time. Best effort — a 4xx/5xx leaves the chip empty.
   useEffect(() => {
-    fetchStatus().then(setStatus).catch(() => {});
+    fetchStatus()
+      .then((s) => {
+        setStatus(s);
+        // Seed the subtitles checkbox from the user's config the first
+        // time /status resolves. Don't clobber a value the user has
+        // explicitly toggled while the request was in flight.
+        if (!subtitlesUserOverride.current) {
+          setSubtitles(s.subtitles_default ?? false);
+        }
+      })
+      .catch(() => {});
   }, []);
+
+  function handleSubtitlesChange(value: boolean) {
+    subtitlesUserOverride.current = true;
+    setSubtitles(value);
+  }
 
   const sseState = useJobsStream((event) => {
     if (!event.event) return;
@@ -268,7 +289,7 @@ export default function App() {
     setSubmitting(true);
     setSubmitError(null);
     try {
-      await createJob(entryUrl, format);
+      await createJob(entryUrl, format, subtitles);
       setUrl("");
       setPreview({ kind: "idle" });
       setSingleEnriched(null);
@@ -284,7 +305,7 @@ export default function App() {
     setSubmitting(true);
     setSubmitError(null);
     try {
-      await createJobsFromPick(urls, format);
+      await createJobsFromPick(urls, format, subtitles);
       setUrl("");
       setPreview({ kind: "idle" });
       await refreshAll();
@@ -362,6 +383,8 @@ export default function App() {
         onUrlChange={setUrl}
         format={format}
         onFormatChange={setFormat}
+        subtitles={subtitles}
+        onSubtitlesChange={handleSubtitlesChange}
       />
 
       {preview.kind === "loading" && (

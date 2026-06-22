@@ -47,6 +47,7 @@ def _to_out(job: Job) -> JobOut:
         eta_s=job.eta_s,
         error=job.error,
         force_overwrite=job.force_overwrite,
+        subtitles=job.subtitles,
         attempts=job.attempts,
         created_at=job.created_at,
         started_at=job.started_at,
@@ -59,6 +60,14 @@ def post_job(payload: JobCreate, request: Request) -> JobOut:
     cfg = request.app.state.config
     fmt = payload.format_pref or cfg.default_format
     out_dir = str(cfg.output_dir)
+    # None on the wire == "use the server default". An explicit true/false
+    # always wins so users can opt out of a globally-enabled default for a
+    # single URL.
+    subs = (
+        payload.subtitles
+        if payload.subtitles is not None
+        else cfg.subtitles_default
+    )
     conn = _conn(request)
     try:
         if payload.url is not None:
@@ -68,6 +77,7 @@ def post_job(payload: JobCreate, request: Request) -> JobOut:
                 kind=JobKind.VIDEO,  # playlist detection happens at worker time
                 format_pref=fmt,
                 output_dir=out_dir,
+                subtitles=subs,
             )
         else:
             # Picked subset from a playlist preview. Each URL becomes its own
@@ -86,6 +96,7 @@ def post_job(payload: JobCreate, request: Request) -> JobOut:
                         kind=JobKind.VIDEO,
                         format_pref=fmt,
                         output_dir=out_dir,
+                        subtitles=subs,
                     )
                     if first_id is None:
                         first_id = job_id

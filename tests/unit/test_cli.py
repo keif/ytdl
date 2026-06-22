@@ -212,6 +212,94 @@ def test_cli_queue_redownload_fails_for_unknown_id(tmp_data_dir: Path) -> None:
     assert "Cannot redownload" in result.output
 
 
+def test_cli_queue_add_with_subs_sets_flag(tmp_data_dir: Path) -> None:
+    """`ytdl queue add --subs` enqueues a job with subtitles=True."""
+    from ytdl.config import load_config
+    from ytdl.db import connect, migrate
+    from ytdl.queue import list_jobs
+
+    result = runner.invoke(
+        app, ["queue", "add", "https://yt/x", "--subs"]
+    )
+    assert result.exit_code == 0, result.output
+
+    cfg = load_config()
+    conn = connect(cfg.db_path)
+    migrate(conn)
+    jobs = list_jobs(conn)
+    conn.close()
+    assert len(jobs) == 1
+    assert jobs[0].subtitles is True
+
+
+def test_cli_queue_add_default_subs_off(tmp_data_dir: Path) -> None:
+    """Without --subs and without `subtitles_default` set, the flag stays off."""
+    from ytdl.config import load_config
+    from ytdl.db import connect, migrate
+    from ytdl.queue import list_jobs
+
+    result = runner.invoke(app, ["queue", "add", "https://yt/x"])
+    assert result.exit_code == 0, result.output
+
+    cfg = load_config()
+    conn = connect(cfg.db_path)
+    migrate(conn)
+    jobs = list_jobs(conn)
+    conn.close()
+    assert jobs[0].subtitles is False
+
+
+def test_cli_queue_add_no_subs_overrides_config_default(tmp_data_dir: Path) -> None:
+    """`--no-subs` opts out even when `subtitles_default = true` in config."""
+    from ytdl.config import load_config
+    from ytdl.db import connect, migrate
+    from ytdl.queue import list_jobs
+
+    cfg_path = tmp_data_dir / "config" / "ytdl" / "config.toml"
+    cfg_path.parent.mkdir(parents=True)
+    cfg_path.write_text("subtitles_default = true\n")
+
+    result = runner.invoke(
+        app, ["queue", "add", "https://yt/x", "--no-subs"]
+    )
+    assert result.exit_code == 0, result.output
+
+    cfg = load_config()
+    conn = connect(cfg.db_path)
+    migrate(conn)
+    jobs = list_jobs(conn)
+    conn.close()
+    assert jobs[0].subtitles is False
+
+
+def test_cli_get_with_subs_flag_invokes_downloader(
+    tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`ytdl get --subs` forwards the flag into the downloader job."""
+    captured: dict[str, object] = {}
+
+    def fake_download(job, ctx):  # type: ignore[no-untyped-def]
+        from ytdl.downloader import DownloadResult
+
+        captured["subtitles"] = job.subtitles
+        captured["subtitle_langs"] = tuple(ctx.subtitle_langs)
+        return DownloadResult(
+            output_path="/tmp/out.mp4",
+            title="t",
+            video_id="v",
+            uploader="u",
+            duration_s=1,
+            filesize_bytes=1,
+        )
+
+    monkeypatch.setattr("ytdl.downloader.download", fake_download)
+
+    result = runner.invoke(app, ["get", "https://yt/x", "--subs"])
+    assert result.exit_code == 0, result.output
+    assert captured["subtitles"] is True
+    assert "en" in captured["subtitle_langs"]  # type: ignore[operator]
+
+
 def test_queue_add_with_pick_only_enqueues_picked(
     tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

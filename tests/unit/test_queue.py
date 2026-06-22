@@ -581,6 +581,77 @@ def test_retry_job_without_force_defaults_to_false(tmp_path: Path) -> None:
     assert row["force_overwrite"] == 0
 
 
+def test_enqueue_with_subtitles_persists_flag(tmp_path: Path) -> None:
+    conn = _setup(tmp_path)
+    job_id = enqueue(
+        conn,
+        url="u",
+        kind=JobKind.VIDEO,
+        format_pref="best",
+        output_dir="/o",
+        subtitles=True,
+    )
+    row = conn.execute(
+        "SELECT subtitles FROM jobs WHERE id=?", (job_id,)
+    ).fetchone()
+    assert row["subtitles"] == 1
+
+
+def test_enqueue_default_subtitles_is_false(tmp_path: Path) -> None:
+    conn = _setup(tmp_path)
+    job_id = enqueue(
+        conn, url="u", kind=JobKind.VIDEO, format_pref="best", output_dir="/o"
+    )
+    row = conn.execute(
+        "SELECT subtitles FROM jobs WHERE id=?", (job_id,)
+    ).fetchone()
+    assert row["subtitles"] == 0
+
+
+def test_retry_job_inherits_subtitles_from_source_by_default(tmp_path: Path) -> None:
+    from ytdl.queue import retry_job
+
+    conn = _setup(tmp_path)
+    job_id = enqueue(
+        conn,
+        url="u",
+        kind=JobKind.VIDEO,
+        format_pref="best",
+        output_dir="/o",
+        subtitles=True,
+    )
+    conn.execute("UPDATE jobs SET status='done' WHERE id=?", (job_id,))
+    new_id = retry_job(conn, job_id)
+    assert new_id is not None
+    row = conn.execute(
+        "SELECT subtitles FROM jobs WHERE id=?", (new_id,)
+    ).fetchone()
+    # The retry preserves the source row's opt-in.
+    assert row["subtitles"] == 1
+
+
+def test_retry_job_explicit_subtitles_override(tmp_path: Path) -> None:
+    from ytdl.queue import retry_job
+
+    conn = _setup(tmp_path)
+    job_id = enqueue(
+        conn,
+        url="u",
+        kind=JobKind.VIDEO,
+        format_pref="best",
+        output_dir="/o",
+        subtitles=False,
+    )
+    conn.execute("UPDATE jobs SET status='done' WHERE id=?", (job_id,))
+    # Explicit True flips it on even though the source was off.
+    new_id = retry_job(conn, job_id, subtitles=True)
+    assert new_id is not None
+    row = conn.execute(
+        "SELECT subtitles FROM jobs WHERE id=?", (new_id,)
+    ).fetchone()
+    assert row["subtitles"] == 1
+
+
 def test_retry_job_refuses_force_overwrite_on_playlist_child(tmp_path: Path) -> None:
     """A playlist child's original file uses a playlist-aware template
     ('01 - Title [id].ext') that the standalone-video re-download path

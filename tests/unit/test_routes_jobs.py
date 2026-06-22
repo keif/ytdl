@@ -337,3 +337,60 @@ def test_clear_endpoint_deletes_old_done(client: TestClient) -> None:
 def test_clear_endpoint_rejects_negative_days(client: TestClient) -> None:
     r = client.post("/jobs/clear?older_than_days=-1")
     assert r.status_code == 422
+
+
+def test_post_jobs_with_subtitles_true_persists_flag(client: TestClient) -> None:
+    r = client.post(
+        "/jobs", json={"url": "https://yt/x", "subtitles": True}
+    )
+    assert r.status_code == 201
+    body = r.json()
+    assert body["subtitles"] is True
+
+
+def test_post_jobs_without_subtitles_uses_config_default(tmp_path: Path) -> None:
+    """When the payload omits `subtitles`, the row should pick up the
+    config's `subtitles_default`."""
+    cfg = Config(
+        output_dir=tmp_path / "out",
+        db_path=tmp_path / "ytdl.db",
+        workers=0,
+        cookies_browser=None,
+        default_format="best",
+        subtitles_default=True,
+    )
+    c = TestClient(build_app(cfg))
+    r = c.post("/jobs", json={"url": "https://yt/x"})
+    assert r.status_code == 201
+    assert r.json()["subtitles"] is True
+
+
+def test_post_jobs_explicit_false_overrides_config_default(tmp_path: Path) -> None:
+    """Explicit `subtitles: false` on a single POST must opt out even when
+    the server default is true."""
+    cfg = Config(
+        output_dir=tmp_path / "out",
+        db_path=tmp_path / "ytdl.db",
+        workers=0,
+        cookies_browser=None,
+        default_format="best",
+        subtitles_default=True,
+    )
+    c = TestClient(build_app(cfg))
+    r = c.post("/jobs", json={"url": "https://yt/x", "subtitles": False})
+    assert r.status_code == 201
+    assert r.json()["subtitles"] is False
+
+
+def test_post_jobs_urls_array_applies_subtitles_to_every_child(
+    client: TestClient,
+) -> None:
+    urls = ["https://a.com/1", "https://a.com/2", "https://a.com/3"]
+    r = client.post("/jobs", json={"urls": urls, "subtitles": True})
+    assert r.status_code == 201
+    listed = client.get("/jobs").json()["jobs"]
+    flagged = [
+        j for j in listed if j["url"].startswith("https://a.com/")
+    ]
+    assert len(flagged) == 3
+    assert all(j["subtitles"] is True for j in flagged)

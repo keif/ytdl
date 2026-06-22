@@ -1076,4 +1076,97 @@ describe("App granular SSE updates", () => {
     );
     expect(screen.getByText("Existing")).toBeInTheDocument();
   });
+
+  it("lets an earlier success commit even when a newer refresh is still in flight", async () => {
+    // Slightly different ordering than above: the earlier refresh
+    // resolves FIRST (still during the newer's pending state). Its
+    // payload must apply, not be discarded as 'stale'.
+    let resolveFirstRefresh: (value: Response) => void = () => {};
+    let resolveSecondRefresh: (value: Response) => void = () => {};
+    let initialJobsDone = false;
+    let firstRefreshSeen = false;
+    let secondRefreshSeen = false;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      if (url === "/jobs" || url.startsWith("/jobs?")) {
+        jobsCallCount++;
+        if (!initialJobsDone) {
+          initialJobsDone = true;
+          return jobsListResponse([singleJob({ id: "existing", title: "Existing" })]);
+        }
+        if (!firstRefreshSeen) {
+          firstRefreshSeen = true;
+          return new Promise<Response>((resolve) => {
+            resolveFirstRefresh = resolve;
+          });
+        }
+        if (!secondRefreshSeen) {
+          secondRefreshSeen = true;
+          return new Promise<Response>((resolve) => {
+            resolveSecondRefresh = resolve;
+          });
+        }
+        return jobsListResponse([]);
+      }
+      if (url === "/status") return statusResponse();
+      if (url.startsWith("/jobs/clear/preview")) {
+        return new Response(
+          JSON.stringify({ clearable: 0, older_than_days: 7 }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByText("Existing")).toBeInTheDocument());
+    const es = esInstances[0];
+
+    // Two refresh-triggering events.
+    act(() => {
+      es.onmessage?.({
+        data: JSON.stringify({ event: "snapshot", jobs: [] }),
+      } as MessageEvent);
+      es.onmessage?.({
+        data: JSON.stringify({ event: "expanded", job_id: "parent", child_count: 1 }),
+      } as MessageEvent);
+    });
+    await waitFor(() => expect(jobsCallCount).toBe(3));
+
+    // The EARLIER refresh resolves first with discovered rows.
+    await act(async () => {
+      resolveFirstRefresh(
+        jobsListResponse([
+          singleJob({ id: "existing", title: "Existing" }),
+          singleJob({ id: "discovered", title: "Discovered by Earlier" }),
+        ]),
+      );
+      await Promise.resolve();
+    });
+
+    // Should have applied — even though a newer refresh is still pending.
+    await waitFor(() =>
+      expect(screen.getByText("Discovered by Earlier")).toBeInTheDocument(),
+    );
+
+    // Now the later refresh resolves with its own payload.
+    await act(async () => {
+      resolveSecondRefresh(
+        jobsListResponse([
+          singleJob({ id: "existing", title: "Existing" }),
+          singleJob({ id: "discovered", title: "Discovered by Earlier" }),
+          singleJob({ id: "newer", title: "Newer Result" }),
+        ]),
+      );
+      await Promise.resolve();
+    });
+
+    // Latest refresh wins for the final state.
+    expect(screen.getByText("Newer Result")).toBeInTheDocument();
+  });
 });

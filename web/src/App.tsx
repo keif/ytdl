@@ -125,10 +125,12 @@ export default function App() {
       }
       throw e;
     }
-    if (refreshIssuedSeq.current !== issued) {
-      // A newer refresh() was kicked off and is responsible for the
-      // post-state. Drop this older response so we don't roll back the
-      // newer one's results.
+    // Drop older response ONLY when a newer refresh has already
+    // SUCCESSFULLY committed (refreshSeq > issued). If a newer refresh
+    // is merely in flight, let our older successful response land —
+    // the newer one might fail, and then this would be the only
+    // non-stale data the UI has.
+    if (refreshSeq.current >= issued) {
       return;
     }
     setJobs((prev) => {
@@ -184,10 +186,10 @@ export default function App() {
 
       return merged;
     });
-    // Refresh committed successfully — bump refreshSeq so any in-flight
-    // lifecycle fetch that captured a lower seq at issue knows it's
-    // stale.
-    refreshSeq.current += 1;
+    // Refresh committed successfully — set refreshSeq to the highest
+    // committed value so any in-flight lifecycle fetch that captured a
+    // lower seq at issue knows it's stale.
+    if (issued > refreshSeq.current) refreshSeq.current = issued;
   }
 
   async function refreshAll() {

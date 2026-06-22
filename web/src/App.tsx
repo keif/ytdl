@@ -62,7 +62,18 @@ export default function App() {
   async function refresh() {
     const seq = refreshSeq.current + 1;
     refreshSeq.current = seq;
-    const list = await listJobs();
+    let list: { jobs: Job[]; total: number };
+    try {
+      list = await listJobs();
+    } catch (e) {
+      // Roll back our claim on the seq so an earlier successful refresh
+      // that's still in flight can still write — its response is the
+      // only data the user is going to see.
+      if (refreshSeq.current === seq) {
+        refreshSeq.current = seq - 1;
+      }
+      throw e;
+    }
     if (refreshSeq.current !== seq) {
       // A newer refresh() was kicked off and is responsible for the
       // post-state. Drop this older response so we don't roll back the
@@ -74,21 +85,28 @@ export default function App() {
       // that may have come from live SSE events while /jobs was
       // fetching. The /jobs payload surfaces SQLite values that workers
       // write throttled (1Hz); the SSE bus is unthrottled.
+      //
+      // bytes_done and filesize_bytes are a coupled pair (the percentage
+      // is bytes/total). When we keep one side's bytes_done, we MUST
+      // keep the same side's filesize_bytes too, otherwise the
+      // percentage misreports.
       const prevById = new Map(prev.map((j) => [j.id, j]));
       return list.jobs.map((row) => {
         if (row.status !== "running") return row;
         const live = prevById.get(row.id);
         if (!live || live.status !== "running") return row;
-        return {
-          ...row,
-          bytes_done:
-            (live.bytes_done ?? 0) > (row.bytes_done ?? 0)
-              ? live.bytes_done
-              : row.bytes_done,
-          filesize_bytes: live.filesize_bytes ?? row.filesize_bytes,
-          speed_bps: live.speed_bps ?? row.speed_bps,
-          eta_s: live.eta_s ?? row.eta_s,
-        };
+        const liveDone = live.bytes_done ?? 0;
+        const rowDone = row.bytes_done ?? 0;
+        if (liveDone > rowDone) {
+          return {
+            ...row,
+            bytes_done: live.bytes_done,
+            filesize_bytes: live.filesize_bytes ?? row.filesize_bytes,
+            speed_bps: live.speed_bps ?? row.speed_bps,
+            eta_s: live.eta_s ?? row.eta_s,
+          };
+        }
+        return row;
       });
     });
   }

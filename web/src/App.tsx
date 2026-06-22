@@ -69,6 +69,16 @@ export default function App() {
       // Roll back our claim on the seq so an earlier successful refresh
       // that's still in flight can still write — its response is the
       // only data the user is going to see.
+      //
+      // Known limit: with 3+ overlapping refreshes where two NEWER ones
+      // fail out of order, the rollback can land on a seq that itself
+      // failed, suppressing an even-earlier success. We accept this
+      // because (a) it requires three concurrent refreshes, which
+      // single-user homelab use almost never produces, and (b) the
+      // user-visible failure mode is "UI stays on the pre-refresh
+      // listing until the next SSE event triggers another refresh" —
+      // not data loss. The next event arrives within seconds in any
+      // realistic flow.
       if (refreshSeq.current === seq) {
         refreshSeq.current = seq - 1;
       }

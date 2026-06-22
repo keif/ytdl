@@ -48,6 +48,10 @@ export default function App() {
   // every submit.
   const [subtitles, setSubtitles] = useState(false);
   const subtitlesUserOverride = useRef(false);
+  // Per-paste intent — unlike `subtitles` (which mirrors a persistent server
+  // default), audio-only resets every time the URL clears. Most paste-it sessions
+  // want video; the user opts into audio explicitly for the current URL.
+  const [audioOnly, setAudioOnly] = useState(false);
   const [preview, setPreview] = useState<PreviewState>({ kind: "idle" });
   const [singleEnriched, setSingleEnriched] = useState<EnrichedEntry | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -300,8 +304,10 @@ export default function App() {
     setSubmitting(true);
     setSubmitError(null);
     try {
-      await createJob(entryUrl, format, effectiveSubtitles());
+      const effectiveFormat = audioOnly ? "audio_only" : format;
+      await createJob(entryUrl, effectiveFormat, effectiveSubtitles());
       setUrl("");
+      setAudioOnly(false);
       setPreview({ kind: "idle" });
       setSingleEnriched(null);
       await refreshAll();
@@ -316,8 +322,10 @@ export default function App() {
     setSubmitting(true);
     setSubmitError(null);
     try {
-      await createJobsFromPick(urls, format, effectiveSubtitles());
+      const effectiveFormat = audioOnly ? "audio_only" : format;
+      await createJobsFromPick(urls, effectiveFormat, effectiveSubtitles());
       setUrl("");
+      setAudioOnly(false);
       setPreview({ kind: "idle" });
       await refreshAll();
     } catch (e) {
@@ -391,11 +399,32 @@ export default function App() {
 
       <SubmitForm
         url={url}
-        onUrlChange={setUrl}
+        onUrlChange={(value) => {
+          // Audio-only is per-paste intent. Reset on any non-typing
+          // change — clear, replace, backspace, or paste-extend.
+          //
+          // A "typing" change adds exactly one character to the end of
+          // the existing text (`value.startsWith(url) && value.length
+          // === url.length + 1`). Anything else (multi-char insertion
+          // from paste/autofill, select-all-paste of a longer URL that
+          // happens to share a prefix, backspace, full replace) means
+          // the user is moving to a different URL and the checkbox
+          // shouldn't silently carry over.
+          // Treat the empty-to-anything transition as a fresh start
+          // (the user set the checkbox BEFORE pasting). Otherwise,
+          // only a single-char append counts as typing.
+          const isFreshPaste = url === "" && value !== "";
+          const isTypingExtension =
+            value.startsWith(url) && value.length === url.length + 1;
+          if (!isFreshPaste && !isTypingExtension) setAudioOnly(false);
+          setUrl(value);
+        }}
         format={format}
         onFormatChange={setFormat}
         subtitles={subtitles}
         onSubtitlesChange={handleSubtitlesChange}
+        audioOnly={audioOnly}
+        onAudioOnlyChange={setAudioOnly}
       />
 
       {preview.kind === "loading" && (
@@ -412,7 +441,7 @@ export default function App() {
         <PreviewVideo
           entry={singleEntry}
           enriched={singleEnriched ?? undefined}
-          format={format}
+          format={audioOnly ? "audio_only" : format}
           onDownload={() => submitSingle(singleEntry.url)}
           busy={submitting}
         />
@@ -425,6 +454,7 @@ export default function App() {
           onConfirm={(urls) => submitPickedUrls(urls)}
           onCancel={() => {
             setUrl("");
+            setAudioOnly(false);
             setPreview({ kind: "idle" });
           }}
         />

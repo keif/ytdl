@@ -38,7 +38,15 @@ def _resolve_output_dir(raw: str) -> str:
         failure mode isn't surfaced to the client to avoid leaking filesystem
         layout details.
     """
-    expanded = Path(raw).expanduser()
+    # `~nosuchuser/...` or unresolvable `~` (no HOME) raises RuntimeError
+    # from expanduser; surface as a client error, not a 500.
+    try:
+        expanded = Path(raw).expanduser()
+    except RuntimeError:
+        raise HTTPException(
+            status_code=400,
+            detail="output_dir must be a writable directory",
+        ) from None
     if expanded.exists():
         if not expanded.is_dir() or not os.access(expanded, os.W_OK):
             raise HTTPException(

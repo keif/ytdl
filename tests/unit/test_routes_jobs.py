@@ -485,3 +485,15 @@ def test_post_jobs_output_dir_expands_tilde(
     )
     assert r.status_code == 201
     assert r.json()["output_dir"] == str(target)
+
+
+def test_post_jobs_output_dir_unresolvable_tilde_returns_400(
+    client: TestClient,
+) -> None:
+    """``~nosuchuser/...`` raises RuntimeError from expanduser; the API must
+    convert that to a 400, not let it surface as a 500."""
+    r = client.post(
+        "/jobs",
+        json={"url": "https://yt/x", "output_dir": "~nosuchuser_xyz_12345/foo"},
+    )
+    assert r.status_code == 400

@@ -673,6 +673,7 @@ def _default_download_adapter(job, ctx: DownloadContext) -> DownloadResult:
         on_progress=ctx.on_progress,
         cancel_flag=ctx.cancel_flag,
         throttle_interval_s=ctx.throttle_interval_s,
+        subtitle_langs=ctx.subtitle_langs,
     )
     return default_download(job, real_ctx)
 

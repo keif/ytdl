@@ -285,11 +285,22 @@ export default function App() {
   });
 
   // ---- Submit handlers ----
+  // When /status hasn't resolved yet AND the user hasn't toggled the checkbox,
+  // the local `subtitles=false` is a placeholder rather than an intentional
+  // opt-out. Send `undefined` in that window so the server's
+  // `subtitles_default` config can apply; once status loads (seeding the
+  // checkbox) or the user toggles it, the value becomes meaningful.
+  function effectiveSubtitles(): boolean | undefined {
+    if (subtitlesUserOverride.current) return subtitles;
+    if (status !== null) return subtitles;
+    return undefined;
+  }
+
   async function submitSingle(entryUrl: string) {
     setSubmitting(true);
     setSubmitError(null);
     try {
-      await createJob(entryUrl, format, subtitles);
+      await createJob(entryUrl, format, effectiveSubtitles());
       setUrl("");
       setPreview({ kind: "idle" });
       setSingleEnriched(null);
@@ -305,7 +316,7 @@ export default function App() {
     setSubmitting(true);
     setSubmitError(null);
     try {
-      await createJobsFromPick(urls, format, subtitles);
+      await createJobsFromPick(urls, format, effectiveSubtitles());
       setUrl("");
       setPreview({ kind: "idle" });
       await refreshAll();

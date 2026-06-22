@@ -21,6 +21,7 @@ const baseJob: Job = {
   speed_bps: 100,
   eta_s: 5,
   error: null,
+  force_overwrite: false,
   attempts: 1,
   created_at: 0,
   started_at: 0,
@@ -217,6 +218,51 @@ describe("JobRow", () => {
     );
     expect(screen.getByText("0 B/s")).toBeInTheDocument();
     expect(screen.getByText("· ETA 0s")).toBeInTheDocument();
+  });
+
+  it("shows re-download button on DONE rows when onRedownload provided", () => {
+    render(
+      <JobRow
+        job={{ ...baseJob, status: "done", finished_at: Date.now() }}
+        onCancel={() => {}}
+        onRetry={() => {}}
+        onRedownload={() => {}}
+      />
+    );
+    expect(
+      screen.getByRole("button", { name: /re-download/i })
+    ).toBeInTheDocument();
+  });
+
+  it("does not show re-download button on failed rows", () => {
+    render(
+      <JobRow
+        job={{ ...baseJob, status: "failed" }}
+        onCancel={() => {}}
+        onRetry={() => {}}
+        onRedownload={() => {}}
+      />
+    );
+    expect(
+      screen.queryByRole("button", { name: /re-download/i })
+    ).not.toBeInTheDocument();
+  });
+
+  it("calls onRedownload when the button is clicked", async () => {
+    const onRedownload = vi.fn();
+    render(
+      <JobRow
+        job={{ ...baseJob, status: "done", finished_at: Date.now() }}
+        onCancel={() => {}}
+        onRetry={() => {}}
+        onRedownload={onRedownload}
+      />
+    );
+    const btn = screen.getByRole("button", { name: /re-download/i });
+    await act(async () => {
+      btn.click();
+    });
+    expect(onRedownload).toHaveBeenCalledWith(baseJob.id);
   });
 
   it("does not render speed/ETA for non-running jobs", () => {

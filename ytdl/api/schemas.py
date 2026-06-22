@@ -76,6 +76,7 @@ class JobOut(BaseModel):
     speed_bps: int | None
     eta_s: int | None
     error: str | None
+    force_overwrite: bool
     attempts: int
     created_at: int
     started_at: int | None

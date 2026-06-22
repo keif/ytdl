@@ -9,6 +9,7 @@ import {
   listJobs,
   previewClear,
   previewUrl,
+  redownloadJob,
   retryJob,
   type EnrichedEntry,
   type Job,
@@ -421,6 +422,10 @@ export default function App() {
         }}
         onRetry={async (id) => {
           await retryJob(id);
+          await refreshAll();
+        }}
+        onRedownload={async (id) => {
+          await redownloadJob(id);
           await refreshAll();
         }}
       />

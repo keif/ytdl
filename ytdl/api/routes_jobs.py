@@ -46,6 +46,7 @@ def _to_out(job: Job) -> JobOut:
         speed_bps=job.speed_bps,
         eta_s=job.eta_s,
         error=job.error,
+        force_overwrite=job.force_overwrite,
         attempts=job.attempts,
         created_at=job.created_at,
         started_at=job.started_at,
@@ -189,6 +190,32 @@ def retry_endpoint(job_id: str, request: Request) -> JobOut:
     conn = _conn(request)
     try:
         new_id = retry_job(conn, job_id)
+        if new_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail="job not found, or not in a state that can be retried",
+            )
+        job = get_job(conn, new_id)
+        assert job is not None
+        return _to_out(job)
+    finally:
+        conn.close()
+
+
+@router.post("/{job_id}/redownload", status_code=201)
+def redownload_endpoint(job_id: str, request: Request) -> JobOut:
+    """Clone the source job with force_overwrite=True so yt-dlp re-fetches the
+    file even if it already exists on disk.
+
+    Distinct from /retry: retry leaves nooverwrites=True (yt-dlp's default),
+    which means a DONE job whose output file is still on disk gets silently
+    skipped. Re-download is the explicit "I really want a fresh copy" path
+    — used when the previous download was corrupt, used the wrong format,
+    or the YouTube source changed.
+    """
+    conn = _conn(request)
+    try:
+        new_id = retry_job(conn, job_id, force_overwrite=True)
         if new_id is None:
             raise HTTPException(
                 status_code=400,

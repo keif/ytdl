@@ -64,7 +64,16 @@ export function JobRow({ job, onCancel, onRetry, onRedownload }: Props) {
   const retryable = job.status === "failed" || job.status === "canceled" || job.status === "done";
   // Re-download is only meaningful on DONE — failed/canceled jobs have no
   // file on disk to overwrite, so a plain retry is the same intent.
-  const redownloadable = job.status === "done" && onRedownload !== undefined;
+  //
+  // Playlist children are excluded because their original file was written
+  // with a playlist-aware template that the standalone-video re-download
+  // path can't reproduce; the user should re-download the playlist PARENT
+  // instead, which cascades to every child via force_overwrite propagation
+  // at expansion time.
+  const redownloadable =
+    job.status === "done"
+    && onRedownload !== undefined
+    && job.parent_job_id === null;
   const { label, ts } = pickTimestamp(job);
   const abs = ts ? new Date(ts).toLocaleString() : "";
   const rel = relativeTime(ts);

@@ -581,6 +581,32 @@ def test_retry_job_without_force_defaults_to_false(tmp_path: Path) -> None:
     assert row["force_overwrite"] == 0
 
 
+def test_retry_job_refuses_force_overwrite_on_playlist_child(tmp_path: Path) -> None:
+    """A playlist child's original file uses a playlist-aware template
+    ('01 - Title [id].ext') that the standalone-video re-download path
+    can't reproduce. Refuse the operation — the user should redownload
+    the parent instead."""
+    from ytdl.queue import retry_job
+
+    conn = _setup(tmp_path)
+    parent_id = enqueue(
+        conn, url="p", kind=JobKind.VIDEO, format_pref="best", output_dir="/o"
+    )
+    child_id = enqueue(
+        conn,
+        url="c",
+        kind=JobKind.VIDEO,
+        format_pref="best",
+        output_dir="/o",
+        parent_job_id=parent_id,
+    )
+    conn.execute("UPDATE jobs SET status='done' WHERE id=?", (child_id,))
+    # Plain retry still works.
+    assert retry_job(conn, child_id) is not None
+    # But force_overwrite is refused.
+    assert retry_job(conn, child_id, force_overwrite=True) is None
+
+
 def test_claim_one_does_not_record_started_event(tmp_path: Path) -> None:
     """claim_one is now a pure claim primitive. The supervisor records the
     'started' event so it can capture the event id and publish it on the bus

@@ -248,6 +248,28 @@ describe("JobRow", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("does not show re-download button on DONE playlist children", () => {
+    render(
+      <JobRow
+        job={{
+          ...baseJob,
+          status: "done",
+          parent_job_id: "some-playlist-id",
+          finished_at: Date.now(),
+        }}
+        onCancel={() => {}}
+        onRetry={() => {}}
+        onRedownload={() => {}}
+      />
+    );
+    // Retry is still allowed (no-op safe), but re-download isn't —
+    // playlist children must be re-downloaded via the parent.
+    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /re-download/i })
+    ).not.toBeInTheDocument();
+  });
+
   it("calls onRedownload when the button is clicked", async () => {
     const onRedownload = vi.fn();
     render(

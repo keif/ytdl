@@ -476,7 +476,8 @@ def retry_job(
     missing).
     """
     row = conn.execute(
-        "SELECT url, format_pref, output_dir, kind, status FROM jobs WHERE id = ?",
+        "SELECT url, format_pref, output_dir, kind, status, parent_job_id "
+        "FROM jobs WHERE id = ?",
         (job_id,),
     ).fetchone()
     if row is None:
@@ -486,6 +487,15 @@ def retry_job(
         JobStatus.CANCELED.value,
         JobStatus.DONE.value,
     ):
+        return None
+    # Refuse force-overwrite on a playlist CHILD. The original file was
+    # written with a playlist-aware template ("01 - Title [id].ext") that
+    # the standalone-video template can't reproduce, so a child re-download
+    # would write a different filename in the playlist folder instead of
+    # overwriting the existing indexed file. The user should re-download
+    # the playlist PARENT to refresh that child, which the worker handles
+    # correctly via cascade. Plain retry (no force) is still allowed.
+    if force_overwrite and row["parent_job_id"] is not None:
         return None
     # Always re-enqueue as VIDEO. The worker re-detects playlists by probing
     # the URL; restoring the original PLAYLIST kind would skip detection and

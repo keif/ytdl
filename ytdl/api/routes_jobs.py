@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
@@ -18,6 +21,54 @@ from ytdl.queue import (
 )
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
+
+
+def _resolve_output_dir(raw: str) -> str:
+    """Expand and validate a per-job output_dir override.
+
+    Rules:
+      - Tilde expansion (``~/Music`` -> ``/home/user/Music``) so the UI can
+        accept the same shorthand users write in shells.
+      - If the path exists, it must be a directory and writable. Pointing at a
+        file is a configuration error.
+      - If the path doesn't exist, the parent must exist and be writable so
+        the worker can create the directory at download time (it already calls
+        ``Path(...).mkdir(parents=True, exist_ok=True)``).
+      - Errors raise HTTPException 400 with a generic message; the specific
+        failure mode isn't surfaced to the client to avoid leaking filesystem
+        layout details.
+    """
+    # `~nosuchuser/...` or unresolvable `~` (no HOME) raises RuntimeError
+    # from expanduser; surface as a client error, not a 500.
+    try:
+        expanded = Path(raw).expanduser()
+    except RuntimeError:
+        raise HTTPException(
+            status_code=400,
+            detail="output_dir must be a writable directory",
+        ) from None
+    # On POSIX, creating files inside a directory needs both write AND
+    # search/execute permission. A 0200 dir (write-only) would pass a
+    # plain W_OK check and then fail when yt-dlp tries to write — check
+    # both upfront so the failure is a 400 at submit time.
+    if expanded.exists():
+        if not expanded.is_dir() or not os.access(expanded, os.W_OK | os.X_OK):
+            raise HTTPException(
+                status_code=400,
+                detail="output_dir must be a writable directory",
+            )
+    else:
+        parent = expanded.parent
+        if (
+            not parent.exists()
+            or not parent.is_dir()
+            or not os.access(parent, os.W_OK | os.X_OK)
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="output_dir must be a writable directory",
+            )
+    return str(expanded)
 
 
 def _conn(request: Request):
@@ -59,7 +110,13 @@ def _to_out(job: Job) -> JobOut:
 def post_job(payload: JobCreate, request: Request) -> JobOut:
     cfg = request.app.state.config
     fmt = payload.format_pref or cfg.default_format
-    out_dir = str(cfg.output_dir)
+    # Per-job output_dir override falls back to the server default when the
+    # client omits it. Validation runs once for the whole request so a bad
+    # path on the urls[] branch fails before any child is enqueued.
+    if payload.output_dir is not None:
+        out_dir = _resolve_output_dir(payload.output_dir)
+    else:
+        out_dir = str(cfg.output_dir)
     # None on the wire == "use the server default". An explicit true/false
     # always wins so users can opt out of a globally-enabled default for a
     # single URL.

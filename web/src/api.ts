@@ -53,11 +53,13 @@ export async function createJob(
   url: string,
   formatPref?: string,
   subtitles?: boolean,
+  outputDir?: string,
 ): Promise<Job> {
   const body: Record<string, unknown> = { url, format_pref: formatPref };
   // Only send the field when the caller passed an explicit value — the
   // server treats `undefined`/missing as "use the configured default".
   if (subtitles !== undefined) body.subtitles = subtitles;
+  if (outputDir !== undefined) body.output_dir = outputDir;
   const r = await fetch("/jobs", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -65,7 +67,7 @@ export async function createJob(
   });
   if (!r.ok) {
     const detail = await r.json().catch(() => ({}));
-    throw new Error(detail.detail?.[0]?.msg ?? `createJob: ${r.status}`);
+    throw new Error(detail.detail?.[0]?.msg ?? detail.detail ?? `createJob: ${r.status}`);
   }
   return r.json();
 }
@@ -74,9 +76,11 @@ export async function createJobsFromPick(
   urls: string[],
   formatPref?: string,
   subtitles?: boolean,
+  outputDir?: string,
 ): Promise<Job> {
   const body: Record<string, unknown> = { urls, format_pref: formatPref };
   if (subtitles !== undefined) body.subtitles = subtitles;
+  if (outputDir !== undefined) body.output_dir = outputDir;
   const r = await fetch("/jobs", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -84,7 +88,7 @@ export async function createJobsFromPick(
   });
   if (!r.ok) {
     const detail = await r.json().catch(() => ({}));
-    throw new Error(detail.detail?.[0]?.msg ?? `createJobsFromPick: ${r.status}`);
+    throw new Error(detail.detail?.[0]?.msg ?? detail.detail ?? `createJobsFromPick: ${r.status}`);
   }
   return r.json();
 }
@@ -193,6 +197,9 @@ export interface StatusResponse {
   deno: BinaryStatus;
   ffmpeg: BinaryStatus;
   subtitles_default: boolean;
+  // Server-side default output directory. Surfaced so the "Save to" override
+  // in the submit form can show it as a placeholder when blank.
+  output_dir: string;
 }
 
 export async function fetchStatus(): Promise<StatusResponse> {

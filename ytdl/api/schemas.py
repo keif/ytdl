@@ -34,6 +34,10 @@ class JobCreate(BaseModel):
     # bool overrides it. Lets the UI checkbox show a tri-state default
     # ("use config preference") without forcing a value on every POST.
     subtitles: bool | None = None
+    # Per-job destination override. None falls back to `cfg.output_dir`.
+    # Tilde expansion happens server-side. Validated for writability before
+    # the job is enqueued — see routes_jobs.post_job.
+    output_dir: str | None = Field(default=None, min_length=1, max_length=4096)
 
     @field_validator("url")
     @classmethod

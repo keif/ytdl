@@ -87,6 +87,10 @@ def build_app(config: Config) -> FastAPI:
             "deno": {"present": deno.present, "path": deno.path},
             "ffmpeg": {"present": ffmpeg.present, "path": ffmpeg.path},
             "subtitles_default": cfg.subtitles_default,
+            # Surface the configured default output_dir so the UI's
+            # "Save to" override can show what the server would use as
+            # the placeholder when the field is left blank.
+            "output_dir": str(cfg.output_dir),
         }
 
     # Serve the built Vite bundle when present. The Dockerfile copies the

@@ -8,7 +8,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _MIGRATIONS: dict[int, list[str]] = {
     1: [
@@ -49,6 +49,14 @@ _MIGRATIONS: dict[int, list[str]] = {
         )
         """,
         "CREATE INDEX IF NOT EXISTS events_job_id ON events(job_id)",
+    ],
+    2: [
+        # Flag to force yt-dlp to overwrite an existing output file. The
+        # default behavior (nooverwrites=True) silently skips re-downloads
+        # when the file is already on disk — useful for resumes, surprising
+        # when the previous file was corrupt. The "Re-download" action sets
+        # this on the cloned job.
+        "ALTER TABLE jobs ADD COLUMN force_overwrite INTEGER NOT NULL DEFAULT 0",
     ],
 }
 

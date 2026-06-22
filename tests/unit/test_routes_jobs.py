@@ -238,6 +238,54 @@ def test_retry_endpoint_returns_400_for_unknown_id(client: TestClient) -> None:
     assert r.status_code == 400
 
 
+def test_redownload_endpoint_creates_force_overwrite_clone(client: TestClient) -> None:
+    from ytdl.db import connect
+
+    db = client.app.state.config.db_path
+    job_id = client.post("/jobs", json={"url": "https://yt/x"}).json()["id"]
+    conn = connect(db)
+    conn.execute(
+        "UPDATE jobs SET status='done', finished_at=? WHERE id=?", (1, job_id)
+    )
+    conn.commit()
+    conn.close()
+    r = client.post(f"/jobs/{job_id}/redownload")
+    assert r.status_code == 201
+    body = r.json()
+    assert body["id"] != job_id
+    assert body["status"] == "pending"
+    assert body["force_overwrite"] is True
+
+
+def test_redownload_endpoint_rejects_pending(client: TestClient) -> None:
+    job_id = client.post("/jobs", json={"url": "https://yt/x"}).json()["id"]
+    r = client.post(f"/jobs/{job_id}/redownload")
+    assert r.status_code == 400
+
+
+def test_redownload_endpoint_returns_400_for_unknown_id(client: TestClient) -> None:
+    r = client.post("/jobs/01nonexistent/redownload")
+    assert r.status_code == 400
+
+
+def test_retry_endpoint_clone_keeps_force_overwrite_false(client: TestClient) -> None:
+    """The plain retry endpoint does NOT set force_overwrite — that's what
+    differentiates it from redownload."""
+    from ytdl.db import connect
+
+    db = client.app.state.config.db_path
+    job_id = client.post("/jobs", json={"url": "https://yt/x"}).json()["id"]
+    conn = connect(db)
+    conn.execute(
+        "UPDATE jobs SET status='done', finished_at=? WHERE id=?", (1, job_id)
+    )
+    conn.commit()
+    conn.close()
+    r = client.post(f"/jobs/{job_id}/retry")
+    assert r.status_code == 201
+    assert r.json()["force_overwrite"] is False
+
+
 def test_static_ui_served_when_present(tmp_path: Path) -> None:
     # Stage a fake built UI in the package's `web/` dir.
     import ytdl.api as api_pkg

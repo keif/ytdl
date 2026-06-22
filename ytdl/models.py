@@ -41,6 +41,7 @@ class Job:
     speed_bps: int | None = None
     eta_s: int | None = None
     error: str | None = None
+    force_overwrite: bool = False
     attempts: int = 0
     created_at: int = 0
     started_at: int | None = None

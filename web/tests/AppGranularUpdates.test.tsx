@@ -730,4 +730,177 @@ describe("App granular SSE updates", () => {
     expect(screen.getByText("Promoted Playlist")).toBeInTheDocument();
     expect(screen.queryByText(/Pre-Promotion/)).not.toBeInTheDocument();
   });
+
+  it("does not drop lifecycle responses when an intervening refresh fails", async () => {
+    // A refresh starts but its /jobs request fails before any commit.
+    // A lifecycle fetch that was in flight at the time MUST still apply
+    // — otherwise the row stays stale until another event.
+    let rejectFailingRefresh: (reason: Error) => void = () => {};
+    let initialJobsDone = false;
+    let failingRefreshIssued = false;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      if (url === "/jobs" || url.startsWith("/jobs?")) {
+        jobsCallCount++;
+        if (!initialJobsDone) {
+          initialJobsDone = true;
+          return jobsListResponse([singleJob({ id: "abc", title: "Original" })]);
+        }
+        if (!failingRefreshIssued) {
+          failingRefreshIssued = true;
+          // Hold open — will be rejected later.
+          return new Promise<Response>((_, reject) => {
+            rejectFailingRefresh = reject;
+          });
+        }
+        return jobsListResponse([]);
+      }
+      if (url === "/status") return statusResponse();
+      if (url.startsWith("/jobs/clear/preview")) {
+        return new Response(
+          JSON.stringify({ clearable: 0, older_than_days: 7 }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url.match(/^\/jobs\/[^/]+$/)) {
+        getJobCallCount++;
+        return new Response(
+          JSON.stringify(
+            singleJob({ id: "abc", title: "Lifecycle Update", status: "done" }),
+          ),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByText("Original")).toBeInTheDocument());
+    const es = esInstances[0];
+
+    // Snapshot → starts a refresh that will eventually fail.
+    act(() => {
+      es.onmessage?.({
+        data: JSON.stringify({ event: "snapshot", jobs: [] }),
+      } as MessageEvent);
+    });
+    await waitFor(() => expect(jobsCallCount).toBe(2));
+
+    // Lifecycle event for the row, while refresh is still pending.
+    act(() => {
+      es.onmessage?.({
+        data: JSON.stringify({ event: "finished", job_id: "abc" }),
+      } as MessageEvent);
+    });
+
+    // Now reject the refresh — it never commits.
+    await act(async () => {
+      rejectFailingRefresh(new Error("network failure"));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // The lifecycle update should still have landed.
+    await waitFor(() =>
+      expect(screen.getByText("Lifecycle Update")).toBeInTheDocument(),
+    );
+  });
+
+  it("does not roll back in-flight progress when a lifecycle row applies", async () => {
+    // Progress events for a job patch in place at the SSE rate. If a
+    // lifecycle response with stale progress data lands on top of the
+    // newer progress patches, the bar would jump backwards.
+    let resolveSlowLifecycle: (value: Response) => void = () => {};
+    let slowSeen = false;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      if (url === "/jobs" || url.startsWith("/jobs?")) {
+        jobsCallCount++;
+        // Single job at 10% to start.
+        return jobsListResponse([
+          singleJob({
+            id: "abc",
+            title: "Live",
+            status: "running",
+            bytes_done: 100_000,
+            filesize_bytes: 1_000_000,
+          }),
+        ]);
+      }
+      if (url === "/status") return statusResponse();
+      if (url.startsWith("/jobs/clear/preview")) {
+        return new Response(
+          JSON.stringify({ clearable: 0, older_than_days: 7 }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url.match(/^\/jobs\/[^/]+$/)) {
+        getJobCallCount++;
+        if (!slowSeen) {
+          slowSeen = true;
+          // The lifecycle response carries STALE progress (10%) and
+          // a still-running status. The row in-state should be ahead.
+          return new Promise<Response>((resolve) => {
+            resolveSlowLifecycle = resolve;
+          });
+        }
+        return new Response("not found", { status: 404 });
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByText("Live")).toBeInTheDocument());
+    const es = esInstances[0];
+
+    // Fire a 'started' lifecycle (fetch is held), then a series of
+    // progress events that advance the bar to 80%.
+    act(() => {
+      es.onmessage?.({
+        data: JSON.stringify({ event: "started", job_id: "abc" }),
+      } as MessageEvent);
+      es.onmessage?.({
+        data: JSON.stringify({
+          event: "progress",
+          job_id: "abc",
+          downloaded_bytes: 800_000,
+          total_bytes: 1_000_000,
+        }),
+      } as MessageEvent);
+    });
+    await waitFor(() => expect(screen.getByText("80%")).toBeInTheDocument());
+
+    // Now resolve the slow lifecycle with stale 10% progress.
+    await act(async () => {
+      resolveSlowLifecycle(
+        new Response(
+          JSON.stringify(
+            singleJob({
+              id: "abc",
+              title: "Live",
+              status: "running",
+              bytes_done: 100_000,
+              filesize_bytes: 1_000_000,
+            }),
+          ),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      );
+      await Promise.resolve();
+    });
+
+    // Progress should still be at 80% — not rolled back.
+    expect(screen.getByText("80%")).toBeInTheDocument();
+    expect(screen.queryByText("10%")).not.toBeInTheDocument();
+  });
 });

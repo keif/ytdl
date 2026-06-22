@@ -93,20 +93,28 @@ export default function App() {
     return new Map(lifecycleWritten.current);
   }
 
-  // Monotonic counter for full /jobs refreshes. Each refresh() captures
-  // the next value before its fetch; only the response whose value still
-  // matches the latest at resolution gets to write. Closes the race
-  // where two refreshes (e.g., snapshot + expanded in quick succession)
-  // resolve out of order and the older one clobbers the newer one's
-  // discovery of new rows.
+  // Monotonic counter for full /jobs refreshes. Bumped only when a
+  // refresh SUCCESSFULLY commits to state. Closes two related races:
+  //   - Two refreshes resolve out of order: the older one sees a higher
+  //     committed seq and drops its response.
+  //   - A lifecycle fetch checks this at issue and at resolve; if a
+  //     successful refresh happened in between, the lifecycle response
+  //     is dropped (refresh data is newer for that row).
+  // Crucially, refreshes that FAIL don't bump this — so a lifecycle
+  // fetch is never dropped on behalf of a refresh that never wrote
+  // anything.
   const refreshSeq = useRef(0);
+  // Pending refresh sequence: how many refreshes have STARTED. The
+  // refresh function uses this to detect that a newer refresh is in
+  // flight and drop its own (older) write.
+  const refreshIssuedSeq = useRef(0);
 
   async function refresh() {
-    const seq = refreshSeq.current + 1;
-    refreshSeq.current = seq;
+    const issued = refreshIssuedSeq.current + 1;
+    refreshIssuedSeq.current = issued;
     const before = snapshotLifecycleWrites();
     const list = await listJobs();
-    if (refreshSeq.current !== seq) {
+    if (refreshIssuedSeq.current !== issued) {
       // A newer refresh() was kicked off and is responsible for the
       // post-state. Drop this older response so we don't roll back the
       // newer one's results.
@@ -144,6 +152,10 @@ export default function App() {
 
       return merged;
     });
+    // Refresh committed successfully — bump refreshSeq so any in-flight
+    // lifecycle fetch that captured a lower seq at issue knows it's
+    // stale.
+    refreshSeq.current += 1;
   }
 
   async function refreshAll() {
@@ -327,7 +339,29 @@ export default function App() {
             const idx = prev.findIndex((j) => j.id === updated.id);
             if (idx === -1) return [updated, ...prev];
             const copy = [...prev];
-            copy[idx] = updated;
+            // Preserve in-flight progress fields when applying a
+            // lifecycle row that's still in a non-terminal status. The
+            // /jobs/{id} response read from the DB can be behind the
+            // live event stream because workers write progress
+            // throttled (1Hz) to SQLite — the SSE bus is unthrottled.
+            // For terminal states we trust the lifecycle row entirely
+            // (it'll have final bytes_done/filesize_bytes).
+            const live = copy[idx];
+            const lifecycleIsRunning = updated.status === "running";
+            if (lifecycleIsRunning) {
+              copy[idx] = {
+                ...updated,
+                bytes_done:
+                  (live.bytes_done ?? 0) > (updated.bytes_done ?? 0)
+                    ? live.bytes_done
+                    : updated.bytes_done,
+                filesize_bytes: live.filesize_bytes ?? updated.filesize_bytes,
+                speed_bps: live.speed_bps ?? updated.speed_bps,
+                eta_s: live.eta_s ?? updated.eta_s,
+              };
+            } else {
+              copy[idx] = updated;
+            }
             return copy;
           });
         })

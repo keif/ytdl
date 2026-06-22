@@ -324,9 +324,14 @@ def test_build_ydl_options_enables_subtitles_when_flag_set(tmp_path: Path) -> No
     assert opts.get("writeautomaticsub") is False
     assert opts.get("subtitleslangs") == ["es", "en"]
     # Postprocessors must include FFmpegEmbedSubtitle so the .vtt is baked
-    # into the MP4. Sidecar file stays on disk by default.
-    pp_keys = {p.get("key") for p in opts.get("postprocessors", [])}
-    assert "FFmpegEmbedSubtitle" in pp_keys
+    # into the MP4. `already_have_subtitle=True` keeps the sidecar file on
+    # disk (the postprocessor's default deletes it after embedding).
+    embed_pp = next(
+        (p for p in opts.get("postprocessors", []) if p.get("key") == "FFmpegEmbedSubtitle"),
+        None,
+    )
+    assert embed_pp is not None
+    assert embed_pp.get("already_have_subtitle") is True
 
 
 def test_build_ydl_options_omits_subtitle_keys_by_default(tmp_path: Path) -> None:

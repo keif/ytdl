@@ -194,17 +194,21 @@ def _build_ydl_options(job, ctx: DownloadContext, throttle: ProgressThrottle) ->
         opts["continuedl"] = False
     if getattr(job, "subtitles", False):
         # Fetch real subtitles only — writeautomaticsub=True would pull the
-        # machine-generated CC track, which is markedly lower quality. The
-        # FFmpegEmbedSubtitle postprocessor embeds the downloaded .vtt into
-        # the MP4 container; yt-dlp keeps the sidecar file by default so
-        # Plex/Jellyfin can also pick it up. Requires ffmpeg on PATH (which
-        # we already require for stream merging).
+        # machine-generated CC track, which is markedly lower quality.
+        #
+        # FFmpegEmbedSubtitle embeds the downloaded .vtt into the MP4 and,
+        # by default, deletes the sidecar after embedding. The UI promises
+        # both an embedded track AND a sidecar .vtt for Plex/Jellyfin
+        # libraries, so set already_have_subtitle=True to keep the file
+        # on disk (matches yt-dlp's `--embed-subs` CLI behavior when
+        # subtitles are explicitly written).
+        # Requires ffmpeg on PATH (which we already require for merging).
         opts["writesubtitles"] = True
         opts["writeautomaticsub"] = False
         opts["subtitleslangs"] = list(ctx.subtitle_langs) or ["en"]
         opts["postprocessors"] = [
             *opts.get("postprocessors", []),
-            {"key": "FFmpegEmbedSubtitle"},
+            {"key": "FFmpegEmbedSubtitle", "already_have_subtitle": True},
         ]
     return opts
 

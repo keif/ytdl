@@ -132,6 +132,72 @@ async def test_supervisor_expands_playlist_into_children(tmp_path: Path) -> None
     assert all(k.status == JobStatus.DONE for k in kids)
 
 
+@pytest.mark.asyncio
+async def test_playlist_expansion_propagates_force_overwrite_to_children(
+    tmp_path: Path,
+) -> None:
+    """When re-downloading a playlist (force_overwrite=True on the parent),
+    the worker enqueues children with the same flag — otherwise the children
+    (which are what actually invoke yt-dlp) would still no-op against existing
+    files."""
+    from ytdl.workers import Supervisor
+
+    conn = connect(tmp_path / "t.db")
+    migrate(conn)
+    parent_id = enqueue(
+        conn,
+        url="https://yt/playlist?list=PL",
+        kind=JobKind.VIDEO,
+        format_pref="best",
+        output_dir=str(tmp_path),
+        force_overwrite=True,
+    )
+
+    def fake_probe(url: str) -> dict:
+        return {
+            "_type": "playlist",
+            "title": "P",
+            "entries": [
+                {"url": "https://yt/a", "id": "a", "title": "A"},
+                {"url": "https://yt/b", "id": "b", "title": "B"},
+            ],
+        }
+
+    def fake_download(job, ctx):
+        from ytdl.downloader import DownloadResult
+
+        return DownloadResult(
+            output_path=f"{job.output_dir}/{job.id}.mp4",
+            title="x",
+            video_id="x",
+            uploader=None,
+            duration_s=None,
+            filesize_bytes=None,
+        )
+
+    bus = EventsBus()
+    sup = Supervisor(
+        db_path=tmp_path / "t.db",
+        workers=1,
+        bus=bus,
+        downloader=fake_download,
+        probe=fake_probe,
+        cookies_browser=None,
+        retry_delays_s=(0, 0),
+        rate_limit_delay_s=0,
+    )
+    await sup.start()
+    await sup.wait_idle(timeout=3.0)
+    await sup.stop()
+
+    kids = children_of(conn, parent_id)
+    assert len(kids) == 2
+    for k in kids:
+        assert k.force_overwrite is True, (
+            f"child {k.id} should have inherited force_overwrite=True from parent"
+        )
+
+
 def test_sanitize_strips_path_separators() -> None:
     assert _sanitize_path_component("creators/my list") == "creators_my list"
     assert _sanitize_path_component("a\\b") == "a_b"

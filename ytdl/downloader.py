@@ -180,8 +180,14 @@ def _build_ydl_options(job, ctx: DownloadContext, throttle: ProgressThrottle) ->
     # yt-dlp defaults to nooverwrites=True, so a retry of a DONE job whose
     # file is still on disk silently no-ops. The "Re-download" action sets
     # force_overwrite so yt-dlp re-fetches and replaces the file.
+    #
+    # Matches what `yt-dlp --force-overwrites` does at the CLI: both flip
+    # `overwrites=True` AND `continuedl=False`. Without continuedl=False,
+    # yt-dlp's "treat the complete file as already downloaded" path still
+    # short-circuits the fetch even when overwrites is on.
     if getattr(job, "force_overwrite", False):
         opts["overwrites"] = True
+        opts["continuedl"] = False
     return opts
 
 

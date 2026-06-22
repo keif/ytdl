@@ -399,7 +399,14 @@ export default function App() {
 
       <SubmitForm
         url={url}
-        onUrlChange={setUrl}
+        onUrlChange={(value) => {
+          // Audio-only is per-paste intent — when the URL clears (manually
+          // or programmatically), the next paste should start with the
+          // dropdown selection again, not silently inherit a previous
+          // session's audio-only choice.
+          if (value === "") setAudioOnly(false);
+          setUrl(value);
+        }}
         format={format}
         onFormatChange={setFormat}
         subtitles={subtitles}

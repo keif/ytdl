@@ -169,4 +169,28 @@ describe("App audio-only toggle", () => {
     expect(postedBodies.length).toBe(1);
     expect(postedBodies[0]).toMatchObject({ format_pref: "audio_only" });
   });
+
+  it("resets audio-only when the URL input is manually cleared", async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByRole("checkbox", { name: /audio only/i })).toBeInTheDocument();
+    });
+
+    // Tick audio-only, then type a URL, then clear the input manually.
+    const audioCheckbox = screen.getByRole("checkbox", { name: /audio only/i }) as HTMLInputElement;
+    await act(async () => {
+      audioCheckbox.click();
+    });
+    expect(audioCheckbox.checked).toBe(true);
+
+    const input = screen.getByPlaceholderText(/Paste a YouTube URL/i) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "https://yt/x" } });
+    // Manual clear — the per-paste contract says audio-only should reset.
+    fireEvent.change(input, { target: { value: "" } });
+
+    expect(audioCheckbox.checked).toBe(false);
+    // And the dropdown should be enabled again.
+    const select = screen.getByRole("combobox") as HTMLSelectElement;
+    expect(select.disabled).toBe(false);
+  });
 });

@@ -47,6 +47,7 @@ function singleJob(overrides: Record<string, unknown> = {}) {
     speed_bps: null,
     eta_s: null,
     error: null,
+    force_overwrite: false,
     attempts: 1,
     created_at: Date.now() - 5000,
     started_at: Date.now() - 4000,

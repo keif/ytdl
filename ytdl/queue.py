@@ -38,6 +38,7 @@ def _row_to_job(row: sqlite3.Row) -> Job:
         speed_bps=row["speed_bps"],
         eta_s=row["eta_s"],
         error=row["error"],
+        force_overwrite=bool(row["force_overwrite"]),
         attempts=row["attempts"],
         created_at=row["created_at"],
         started_at=row["started_at"],
@@ -66,14 +67,15 @@ def enqueue(
     format_pref: str,
     output_dir: str,
     parent_job_id: str | None = None,
+    force_overwrite: bool = False,
 ) -> str:
     job_id = new_ulid()
     conn.execute(
         """
         INSERT INTO jobs(
             id, url, kind, parent_job_id, status, format_pref, output_dir,
-            attempts, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+            attempts, created_at, force_overwrite
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
         """,
         (
             job_id,
@@ -84,6 +86,7 @@ def enqueue(
             format_pref,
             output_dir,
             _now_ms(),
+            int(force_overwrite),
         ),
     )
     record_event(conn, job_id, "enqueued", {"url": url, "kind": kind.value})
@@ -451,7 +454,12 @@ def revive_orphans(conn: sqlite3.Connection, *, max_attempts: int = 3) -> int:
     return revived + exhausted + canceling_now
 
 
-def retry_job(conn: sqlite3.Connection, job_id: str) -> str | None:
+def retry_job(
+    conn: sqlite3.Connection,
+    job_id: str,
+    *,
+    force_overwrite: bool = False,
+) -> str | None:
     """Create a new PENDING job from an existing terminal one.
 
     Returns the new job id on success, or ``None`` when the source job
@@ -460,9 +468,16 @@ def retry_job(conn: sqlite3.Connection, job_id: str) -> str | None:
 
     The original row is left untouched so the audit trail is preserved; the
     retry is a fresh job, detached from any playlist parent.
+
+    When ``force_overwrite`` is True, the new job's ``force_overwrite`` flag
+    is set so yt-dlp overwrites any existing output file. This is what powers
+    the "Re-download" action; the plain ``Retry`` button leaves the flag false
+    (so re-running a DONE job is effectively a no-op unless the file is
+    missing).
     """
     row = conn.execute(
-        "SELECT url, format_pref, output_dir, kind, status FROM jobs WHERE id = ?",
+        "SELECT url, format_pref, output_dir, kind, status, parent_job_id "
+        "FROM jobs WHERE id = ?",
         (job_id,),
     ).fetchone()
     if row is None:
@@ -472,6 +487,15 @@ def retry_job(conn: sqlite3.Connection, job_id: str) -> str | None:
         JobStatus.CANCELED.value,
         JobStatus.DONE.value,
     ):
+        return None
+    # Refuse force-overwrite on a playlist CHILD. The original file was
+    # written with a playlist-aware template ("01 - Title [id].ext") that
+    # the standalone-video template can't reproduce, so a child re-download
+    # would write a different filename in the playlist folder instead of
+    # overwriting the existing indexed file. The user should re-download
+    # the playlist PARENT to refresh that child, which the worker handles
+    # correctly via cascade. Plain retry (no force) is still allowed.
+    if force_overwrite and row["parent_job_id"] is not None:
         return None
     # Always re-enqueue as VIDEO. The worker re-detects playlists by probing
     # the URL; restoring the original PLAYLIST kind would skip detection and
@@ -483,6 +507,7 @@ def retry_job(conn: sqlite3.Connection, job_id: str) -> str | None:
         format_pref=row["format_pref"],
         output_dir=row["output_dir"],
         parent_job_id=None,
+        force_overwrite=force_overwrite,
     )
 
 

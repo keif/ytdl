@@ -4,6 +4,7 @@ interface Props {
   job: Job;
   onCancel: (id: string) => void;
   onRetry: (id: string) => void;
+  onRedownload?: (id: string) => void;
 }
 
 function relativeTime(ms: number | null | undefined): string {
@@ -55,12 +56,24 @@ function pickTimestamp(job: Job): { label: string; ts: number | null } {
   return { label: "queued", ts: job.created_at };
 }
 
-export function JobRow({ job, onCancel, onRetry }: Props) {
+export function JobRow({ job, onCancel, onRetry, onRedownload }: Props) {
   const total = job.filesize_bytes ?? 0;
   const done = job.bytes_done ?? 0;
   const pct = total ? Math.min(100, Math.floor((done * 100) / total)) : 0;
   const cancellable = job.status === "pending" || job.status === "running";
   const retryable = job.status === "failed" || job.status === "canceled" || job.status === "done";
+  // Re-download is only meaningful on DONE — failed/canceled jobs have no
+  // file on disk to overwrite, so a plain retry is the same intent.
+  //
+  // Playlist children are excluded because their original file was written
+  // with a playlist-aware template that the standalone-video re-download
+  // path can't reproduce; the user should re-download the playlist PARENT
+  // instead, which cascades to every child via force_overwrite propagation
+  // at expansion time.
+  const redownloadable =
+    job.status === "done"
+    && onRedownload !== undefined
+    && job.parent_job_id === null;
   const { label, ts } = pickTimestamp(job);
   const abs = ts ? new Date(ts).toLocaleString() : "";
   const rel = relativeTime(ts);
@@ -106,8 +119,17 @@ export function JobRow({ job, onCancel, onRetry }: Props) {
       {job.error && (
         <p className="text-xs text-red-400">{job.error}</p>
       )}
-      {(cancellable || retryable) && (
+      {(cancellable || retryable || redownloadable) && (
         <div className="self-end flex items-center gap-3">
+          {redownloadable && (
+            <button
+              className="text-xs text-neutral-400 hover:text-neutral-200"
+              onClick={() => onRedownload?.(job.id)}
+              title="Force yt-dlp to re-fetch this file, overwriting the existing one"
+            >
+              re-download
+            </button>
+          )}
           {retryable && (
             <button
               className="text-xs text-neutral-400 hover:text-neutral-200"

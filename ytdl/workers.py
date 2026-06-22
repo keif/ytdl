@@ -276,6 +276,12 @@ class Supervisor:
                             format_pref=job.format_pref,
                             output_dir=str(playlist_subdir),
                             parent_job_id=job.id,
+                            # Propagate the parent's force_overwrite flag so
+                            # re-downloading a playlist parent actually
+                            # re-fetches each child's file. The children are
+                            # what invoke yt-dlp; without this, the parent's
+                            # flag would land on a row that never downloads.
+                            force_overwrite=job.force_overwrite,
                         )
                         enqueued_child_ids.append(child_id)
                         if parent_canceled_pre:

@@ -271,6 +271,48 @@ def test_build_ydl_options_enables_ejs_remote_components(tmp_path: Path) -> None
     assert opts.get("remote_components") == ["ejs:github"]
 
 
+def test_build_ydl_options_sets_overwrites_when_force_overwrite(tmp_path: Path) -> None:
+    from ytdl.downloader import _build_ydl_options
+
+    job = Job(
+        id="01",
+        url="https://yt/x",
+        kind=JobKind.VIDEO,
+        parent_job_id=None,
+        status=JobStatus.RUNNING,
+        format_pref="best",
+        output_dir=str(tmp_path),
+        force_overwrite=True,
+    )
+    ctx = DownloadContext(
+        ydl_cls=None,
+        cookies_browser=None,
+        on_progress=lambda d: None,
+        cancel_flag=lambda: False,
+    )
+    opts = _build_ydl_options(job, ctx, ProgressThrottle())
+    assert opts.get("overwrites") is True
+    # Must also flip continuedl=False, otherwise yt-dlp's "treat complete
+    # file as already downloaded" path short-circuits the re-fetch even
+    # with overwrites=True. Mirrors `yt-dlp --force-overwrites` CLI.
+    assert opts.get("continuedl") is False
+
+
+def test_build_ydl_options_omits_overwrites_by_default(tmp_path: Path) -> None:
+    from ytdl.downloader import _build_ydl_options
+
+    job = _make_job(tmp_path)
+    ctx = DownloadContext(
+        ydl_cls=None,
+        cookies_browser=None,
+        on_progress=lambda d: None,
+        cancel_flag=lambda: False,
+    )
+    opts = _build_ydl_options(job, ctx, ProgressThrottle())
+    assert "overwrites" not in opts
+    assert "continuedl" not in opts
+
+
 def test_download_aborts_when_cancel_flag_set(tmp_path: Path) -> None:
     from ytdl.downloader import DownloadCancelled
 

@@ -342,6 +342,12 @@ export default function App() {
   }
 
   async function submitSingle(entryUrl: string) {
+    // Stop any in-flight auto-submit countdown the moment a manual
+    // submit begins. Without this, a Download click near the end of
+    // the window can race the timer tick: both call submitSingle and
+    // the same URL gets enqueued twice. Idempotent — clearing an
+    // already-cleared interval is a no-op.
+    cancelAutoSubmit();
     setSubmitting(true);
     setSubmitError(null);
     try {

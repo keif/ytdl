@@ -326,4 +326,36 @@ describe("App auto-submit countdown", () => {
     });
     expect(postedBodies.length).toBe(0);
   });
+
+  it("manual Download click during countdown does not double-submit", async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText(/Paste a YouTube URL/i)).toBeInTheDocument();
+    });
+
+    vi.useFakeTimers();
+    await pasteAndAwaitPreview("https://yt/x");
+
+    // Banner is up, countdown at 5s. Click Download manually before
+    // the timer hits 0.
+    expect(screen.getByRole("status")).toHaveTextContent(/Downloading in\s*5s/);
+    const downloadBtn = screen.getByRole("button", { name: /^Download$/ });
+    await act(async () => {
+      fireEvent.click(downloadBtn);
+      await Promise.resolve();
+    });
+
+    // Manual submit fired once.
+    expect(postedBodies.length).toBe(1);
+
+    // Now run the timer past the original countdown window — the auto-
+    // submit must NOT fire a second job for the same URL.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    expect(postedBodies.length).toBe(1);
+
+    // Banner is gone (cancelled at submit time).
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
 });

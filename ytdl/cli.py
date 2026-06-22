@@ -231,8 +231,31 @@ def serve(
             "[yellow]cookies:[/yellow] none detected; "
             "YouTube auth-gated content may fail"
         )
+    _warn_if_web_bundle_missing()
     app_obj = build_app(cfg)
     uvicorn.run(app_obj, host=host, port=port, log_level=cfg.log_level.lower())
+
+
+def _warn_if_web_bundle_missing() -> None:
+    """Tell the user the UI bundle isn't built before they hit a 404 on `/`.
+
+    `ytdl serve` mounts the static UI from `ytdl/web/index.html`. In dev
+    mode (./dev.sh) you don't need this because Vite serves the source
+    directly on :5174 — but a plain `ytdl serve` against a freshly cloned
+    repo or after a `pnpm install` (which can clobber the bundle) silently
+    serves only the API, and the user gets 404 on `/`.
+    """
+    from ytdl import api as api_pkg
+
+    bundle = Path(api_pkg.__file__).parent.parent / "web" / "index.html"
+    if bundle.exists():
+        return
+    console.print(
+        "[yellow]web UI:[/yellow] no built bundle at "
+        f"{bundle.parent} — only the API will be served. "
+        "Build the UI with [bold]cd web && pnpm build[/bold] (one-time), "
+        "or use [bold]./dev.sh[/bold] for HMR development."
+    )
 
 
 def _format_bytes_per_second(bps: int | None) -> str:

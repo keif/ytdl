@@ -903,4 +903,177 @@ describe("App granular SSE updates", () => {
     expect(screen.getByText("80%")).toBeInTheDocument();
     expect(screen.queryByText("10%")).not.toBeInTheDocument();
   });
+
+  it("preserves in-flight progress when a full refresh applies a running row", async () => {
+    // Progress patches advance the row to 80%; meanwhile a refresh
+    // (e.g., from snapshot) lands with the same row at the older 10%
+    // because /jobs read SQLite before the latest progress was flushed.
+    // The merge should preserve the higher in-state progress.
+    let resolveSlowRefresh: (value: Response) => void = () => {};
+    let initialJobsDone = false;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      if (url === "/jobs" || url.startsWith("/jobs?")) {
+        jobsCallCount++;
+        if (!initialJobsDone) {
+          initialJobsDone = true;
+          return jobsListResponse([
+            singleJob({
+              id: "abc",
+              title: "Live",
+              status: "running",
+              bytes_done: 100_000,
+              filesize_bytes: 1_000_000,
+            }),
+          ]);
+        }
+        return new Promise<Response>((resolve) => {
+          resolveSlowRefresh = resolve;
+        });
+      }
+      if (url === "/status") return statusResponse();
+      if (url.startsWith("/jobs/clear/preview")) {
+        return new Response(
+          JSON.stringify({ clearable: 0, older_than_days: 7 }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByText("Live")).toBeInTheDocument());
+    const es = esInstances[0];
+
+    // Snapshot → starts slow refresh.
+    act(() => {
+      es.onmessage?.({
+        data: JSON.stringify({ event: "snapshot", jobs: [] }),
+      } as MessageEvent);
+    });
+    await waitFor(() => expect(jobsCallCount).toBe(2));
+
+    // Progress events advance to 80%.
+    act(() => {
+      es.onmessage?.({
+        data: JSON.stringify({
+          event: "progress",
+          job_id: "abc",
+          downloaded_bytes: 800_000,
+          total_bytes: 1_000_000,
+        }),
+      } as MessageEvent);
+    });
+    await waitFor(() => expect(screen.getByText("80%")).toBeInTheDocument());
+
+    // Refresh lands with STALE 10% progress.
+    await act(async () => {
+      resolveSlowRefresh(
+        jobsListResponse([
+          singleJob({
+            id: "abc",
+            title: "Live",
+            status: "running",
+            bytes_done: 100_000,
+            filesize_bytes: 1_000_000,
+          }),
+        ]),
+      );
+      await Promise.resolve();
+    });
+
+    // Progress should still be at 80%, not rolled back.
+    expect(screen.getByText("80%")).toBeInTheDocument();
+    expect(screen.queryByText("10%")).not.toBeInTheDocument();
+  });
+
+  it("releases issued seq on refresh failure so earlier successful refresh can write", async () => {
+    // Two refreshes overlap. The LATER one fails, so refreshIssuedSeq
+    // must roll back to let the EARLIER one's successful response apply.
+    let resolveFirstRefresh: (value: Response) => void = () => {};
+    let rejectSecondRefresh: (reason: Error) => void = () => {};
+    let initialJobsDone = false;
+    let firstRefreshSeen = false;
+    let secondRefreshSeen = false;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      if (url === "/jobs" || url.startsWith("/jobs?")) {
+        jobsCallCount++;
+        if (!initialJobsDone) {
+          initialJobsDone = true;
+          return jobsListResponse([singleJob({ id: "existing", title: "Existing" })]);
+        }
+        if (!firstRefreshSeen) {
+          firstRefreshSeen = true;
+          return new Promise<Response>((resolve) => {
+            resolveFirstRefresh = resolve;
+          });
+        }
+        if (!secondRefreshSeen) {
+          secondRefreshSeen = true;
+          return new Promise<Response>((_, reject) => {
+            rejectSecondRefresh = reject;
+          });
+        }
+        return jobsListResponse([]);
+      }
+      if (url === "/status") return statusResponse();
+      if (url.startsWith("/jobs/clear/preview")) {
+        return new Response(
+          JSON.stringify({ clearable: 0, older_than_days: 7 }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByText("Existing")).toBeInTheDocument());
+    const es = esInstances[0];
+
+    // Two refresh-triggering events.
+    act(() => {
+      es.onmessage?.({
+        data: JSON.stringify({ event: "snapshot", jobs: [] }),
+      } as MessageEvent);
+      es.onmessage?.({
+        data: JSON.stringify({ event: "expanded", job_id: "parent", child_count: 1 }),
+      } as MessageEvent);
+    });
+    await waitFor(() => expect(jobsCallCount).toBe(3));
+
+    // Reject the second (later) refresh first.
+    await act(async () => {
+      rejectSecondRefresh(new Error("network failure"));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // Now resolve the first (earlier) refresh with discovered new row.
+    await act(async () => {
+      resolveFirstRefresh(
+        jobsListResponse([
+          singleJob({ id: "existing", title: "Existing" }),
+          singleJob({ id: "child", title: "Discovered Child" }),
+        ]),
+      );
+      await Promise.resolve();
+    });
+
+    // The earlier success should have applied — discovered child visible.
+    await waitFor(() =>
+      expect(screen.getByText("Discovered Child")).toBeInTheDocument(),
+    );
+    expect(screen.getByText("Existing")).toBeInTheDocument();
+  });
 });

@@ -48,6 +48,10 @@ export default function App() {
   // every submit.
   const [subtitles, setSubtitles] = useState(false);
   const subtitlesUserOverride = useRef(false);
+  // Per-paste intent — unlike `subtitles` (which mirrors a persistent server
+  // default), audio-only resets every time the URL clears. Most paste-it sessions
+  // want video; the user opts into audio explicitly for the current URL.
+  const [audioOnly, setAudioOnly] = useState(false);
   const [preview, setPreview] = useState<PreviewState>({ kind: "idle" });
   const [singleEnriched, setSingleEnriched] = useState<EnrichedEntry | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -300,8 +304,10 @@ export default function App() {
     setSubmitting(true);
     setSubmitError(null);
     try {
-      await createJob(entryUrl, format, effectiveSubtitles());
+      const effectiveFormat = audioOnly ? "audio_only" : format;
+      await createJob(entryUrl, effectiveFormat, effectiveSubtitles());
       setUrl("");
+      setAudioOnly(false);
       setPreview({ kind: "idle" });
       setSingleEnriched(null);
       await refreshAll();
@@ -316,8 +322,10 @@ export default function App() {
     setSubmitting(true);
     setSubmitError(null);
     try {
-      await createJobsFromPick(urls, format, effectiveSubtitles());
+      const effectiveFormat = audioOnly ? "audio_only" : format;
+      await createJobsFromPick(urls, effectiveFormat, effectiveSubtitles());
       setUrl("");
+      setAudioOnly(false);
       setPreview({ kind: "idle" });
       await refreshAll();
     } catch (e) {
@@ -396,6 +404,8 @@ export default function App() {
         onFormatChange={setFormat}
         subtitles={subtitles}
         onSubtitlesChange={handleSubtitlesChange}
+        audioOnly={audioOnly}
+        onAudioOnlyChange={setAudioOnly}
       />
 
       {preview.kind === "loading" && (
@@ -425,6 +435,7 @@ export default function App() {
           onConfirm={(urls) => submitPickedUrls(urls)}
           onCancel={() => {
             setUrl("");
+            setAudioOnly(false);
             setPreview({ kind: "idle" });
           }}
         />

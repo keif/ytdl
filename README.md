@@ -212,7 +212,6 @@ The suite covers unit-level behavior (queue CAS, downloader format/error logic, 
 
 ## Known limitations / follow-ups
 
-- The web UI refreshes the full job list on every SSE event rather than patching state. Coalesced via 200ms debounce so bursts (e.g., a 50-entry playlist expanding) don't stall the UI. Fine at single-user scale; would want granular updates for hundreds of in-flight jobs.
 - `bytes_done` reflects the last throttle tick; for very short downloads the UI may briefly show a partial value before the success path snaps it to 100%.
 - macOS Chrome cookies are encrypted via the Keychain. yt-dlp's `cookies_from_browser` may pop a Keychain dialog on first read; if you refuse, downloads fail with an auth error.
 

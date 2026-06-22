@@ -147,6 +147,71 @@ def test_cli_queue_retry_fails_for_unknown_id(tmp_data_dir: Path) -> None:
     assert "Cannot retry" in result.output
 
 
+def test_cli_queue_redownload_creates_force_overwrite_clone(
+    tmp_data_dir: Path,
+) -> None:
+    from ytdl.config import load_config
+    from ytdl.db import connect, migrate
+    from ytdl.models import JobKind
+    from ytdl.queue import enqueue
+
+    cfg = load_config()
+    conn = connect(cfg.db_path)
+    migrate(conn)
+    job_id = enqueue(
+        conn,
+        url="https://yt/x",
+        kind=JobKind.VIDEO,
+        format_pref="best",
+        output_dir="/o",
+    )
+    conn.execute("UPDATE jobs SET status='done' WHERE id=?", (job_id,))
+    conn.commit()
+
+    result = runner.invoke(app, ["queue", "redownload", job_id])
+    assert result.exit_code == 0
+    assert "queued redownload" in result.output
+
+    # The new job should carry force_overwrite=1.
+    row = conn.execute(
+        "SELECT force_overwrite FROM jobs WHERE id != ? ORDER BY created_at DESC LIMIT 1",
+        (job_id,),
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    assert row["force_overwrite"] == 1
+
+
+def test_cli_queue_redownload_fails_for_pending(tmp_data_dir: Path) -> None:
+    from ytdl.config import load_config
+    from ytdl.db import connect, migrate
+    from ytdl.models import JobKind
+    from ytdl.queue import enqueue
+
+    cfg = load_config()
+    conn = connect(cfg.db_path)
+    migrate(conn)
+    job_id = enqueue(
+        conn,
+        url="https://yt/x",
+        kind=JobKind.VIDEO,
+        format_pref="best",
+        output_dir="/o",
+    )
+    conn.commit()
+    conn.close()
+
+    result = runner.invoke(app, ["queue", "redownload", job_id])
+    assert result.exit_code != 0
+    assert "Cannot redownload" in result.output
+
+
+def test_cli_queue_redownload_fails_for_unknown_id(tmp_data_dir: Path) -> None:
+    result = runner.invoke(app, ["queue", "redownload", "01nonexistent"])
+    assert result.exit_code != 0
+    assert "Cannot redownload" in result.output
+
+
 def test_queue_add_with_pick_only_enqueues_picked(
     tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

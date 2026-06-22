@@ -177,6 +177,11 @@ def _build_ydl_options(job, ctx: DownloadContext, throttle: ProgressThrottle) ->
     }
     if ctx.cookies_browser:
         opts["cookiesfrombrowser"] = (ctx.cookies_browser,)
+    # yt-dlp defaults to nooverwrites=True, so a retry of a DONE job whose
+    # file is still on disk silently no-ops. The "Re-download" action sets
+    # force_overwrite so yt-dlp re-fetches and replaces the file.
+    if getattr(job, "force_overwrite", False):
+        opts["overwrites"] = True
     return opts
 
 

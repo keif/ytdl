@@ -5,16 +5,23 @@ interface Props {
   jobs: Job[];
   onCancel: (id: string) => void;
   onRetry: (id: string) => void;
+  onRedownload?: (id: string) => void;
 }
 
-export function JobList({ jobs, onCancel, onRetry }: Props) {
+export function JobList({ jobs, onCancel, onRetry, onRedownload }: Props) {
   if (jobs.length === 0) {
     return <p className="text-sm text-neutral-500 px-3 py-6">No jobs yet.</p>;
   }
   return (
     <ul className="border border-neutral-800 rounded">
       {jobs.map((j) => (
-        <JobRow key={j.id} job={j} onCancel={onCancel} onRetry={onRetry} />
+        <JobRow
+          key={j.id}
+          job={j}
+          onCancel={onCancel}
+          onRetry={onRetry}
+          onRedownload={onRedownload}
+        />
       ))}
     </ul>
   );

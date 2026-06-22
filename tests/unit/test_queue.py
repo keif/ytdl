@@ -522,6 +522,65 @@ def test_retry_job_returns_none_for_missing_id(tmp_path: Path) -> None:
     assert retry_job(conn, "01nonexistent") is None
 
 
+def test_enqueue_with_force_overwrite_persists_flag(tmp_path: Path) -> None:
+    conn = _setup(tmp_path)
+    job_id = enqueue(
+        conn,
+        url="u",
+        kind=JobKind.VIDEO,
+        format_pref="best",
+        output_dir="/o",
+        force_overwrite=True,
+    )
+    row = conn.execute(
+        "SELECT force_overwrite FROM jobs WHERE id=?", (job_id,)
+    ).fetchone()
+    assert row["force_overwrite"] == 1
+
+
+def test_enqueue_default_force_overwrite_is_false(tmp_path: Path) -> None:
+    conn = _setup(tmp_path)
+    job_id = enqueue(
+        conn, url="u", kind=JobKind.VIDEO, format_pref="best", output_dir="/o"
+    )
+    row = conn.execute(
+        "SELECT force_overwrite FROM jobs WHERE id=?", (job_id,)
+    ).fetchone()
+    assert row["force_overwrite"] == 0
+
+
+def test_retry_job_with_force_overwrite_creates_flagged_clone(tmp_path: Path) -> None:
+    from ytdl.queue import retry_job
+
+    conn = _setup(tmp_path)
+    job_id = enqueue(
+        conn, url="u", kind=JobKind.VIDEO, format_pref="best", output_dir="/o"
+    )
+    conn.execute("UPDATE jobs SET status='done' WHERE id=?", (job_id,))
+    new_id = retry_job(conn, job_id, force_overwrite=True)
+    assert new_id is not None
+    row = conn.execute(
+        "SELECT force_overwrite FROM jobs WHERE id=?", (new_id,)
+    ).fetchone()
+    assert row["force_overwrite"] == 1
+
+
+def test_retry_job_without_force_defaults_to_false(tmp_path: Path) -> None:
+    from ytdl.queue import retry_job
+
+    conn = _setup(tmp_path)
+    job_id = enqueue(
+        conn, url="u", kind=JobKind.VIDEO, format_pref="best", output_dir="/o"
+    )
+    conn.execute("UPDATE jobs SET status='done' WHERE id=?", (job_id,))
+    new_id = retry_job(conn, job_id)
+    assert new_id is not None
+    row = conn.execute(
+        "SELECT force_overwrite FROM jobs WHERE id=?", (new_id,)
+    ).fetchone()
+    assert row["force_overwrite"] == 0
+
+
 def test_claim_one_does_not_record_started_event(tmp_path: Path) -> None:
     """claim_one is now a pure claim primitive. The supervisor records the
     'started' event so it can capture the event id and publish it on the bus

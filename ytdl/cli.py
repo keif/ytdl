@@ -412,6 +412,28 @@ def queue_retry(job_id: str) -> None:
     console.print(f"queued retry as [bold]{new_id}[/bold]")
 
 
+@queue_app.command("redownload")
+def queue_redownload(job_id: str) -> None:
+    """Clone a failed/canceled/done job with force-overwrite so yt-dlp re-fetches
+    the file even when it already exists on disk."""
+    from ytdl.queue import retry_job
+
+    cfg = load_config()
+    conn = connect(cfg.db_path)
+    migrate(conn)
+    try:
+        new_id = retry_job(conn, job_id, force_overwrite=True)
+    finally:
+        conn.close()
+    if new_id is None:
+        console.print(
+            f"[red]Cannot redownload {job_id}[/red] "
+            "(not found or not in a retryable state)"
+        )
+        raise typer.Exit(code=1)
+    console.print(f"queued redownload as [bold]{new_id}[/bold]")
+
+
 @queue_app.command("clear")
 def queue_clear(
     older_than_days: int = typer.Option(

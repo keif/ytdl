@@ -24,6 +24,7 @@ export interface Job {
   speed_bps: number | null;
   eta_s: number | null;
   error: string | null;
+  force_overwrite: boolean;
   attempts: number;
   created_at: number;
   started_at: number | null;
@@ -86,6 +87,17 @@ export async function retryJob(id: string): Promise<Job> {
   if (!r.ok) {
     const d = await r.json().catch(() => ({}));
     throw new Error(d.detail ?? `retry: ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function redownloadJob(id: string): Promise<Job> {
+  const r = await fetch(`/jobs/${encodeURIComponent(id)}/redownload`, {
+    method: "POST",
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail ?? `redownload: ${r.status}`);
   }
   return r.json();
 }

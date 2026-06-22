@@ -394,3 +394,106 @@ def test_post_jobs_urls_array_applies_subtitles_to_every_child(
     ]
     assert len(flagged) == 3
     assert all(j["subtitles"] is True for j in flagged)
+
+
+def test_post_jobs_with_writable_output_dir_persists_path(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """An override pointing at an existing writable directory is accepted
+    and stored on the job row."""
+    target = tmp_path / "music"
+    target.mkdir()
+    r = client.post(
+        "/jobs",
+        json={"url": "https://yt/x", "output_dir": str(target)},
+    )
+    assert r.status_code == 201
+    assert r.json()["output_dir"] == str(target)
+
+
+def test_post_jobs_with_nonexistent_parent_rejected(
+    client: TestClient,
+) -> None:
+    """A path whose parent doesn't exist can't be created at worker time —
+    400 instead of failing later."""
+    r = client.post(
+        "/jobs",
+        json={
+            "url": "https://yt/x",
+            "output_dir": "/nonexistent-root-aaa/foo/bar",
+        },
+    )
+    assert r.status_code == 400
+    assert "output_dir" in r.json()["detail"]
+
+
+def test_post_jobs_with_file_path_rejected(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """A path pointing at a file (not a directory) is a configuration
+    error — must be 400."""
+    f = tmp_path / "not_a_dir.txt"
+    f.write_text("hello")
+    r = client.post(
+        "/jobs",
+        json={"url": "https://yt/x", "output_dir": str(f)},
+    )
+    assert r.status_code == 400
+
+
+def test_post_jobs_without_output_dir_falls_back_to_config(
+    client: TestClient,
+) -> None:
+    """Omitting output_dir uses cfg.output_dir — preserves existing
+    behavior for clients that don't know about the new field."""
+    r = client.post("/jobs", json={"url": "https://yt/x"})
+    assert r.status_code == 201
+    cfg_dir = str(client.app.state.config.output_dir)
+    assert r.json()["output_dir"] == cfg_dir
+
+
+def test_post_jobs_urls_array_applies_output_dir_to_every_child(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """A per-batch output_dir override covers every child job in the
+    urls[] branch."""
+    target = tmp_path / "playlist_out"
+    target.mkdir()
+    urls = ["https://a.com/1", "https://a.com/2", "https://a.com/3"]
+    r = client.post(
+        "/jobs",
+        json={"urls": urls, "output_dir": str(target)},
+    )
+    assert r.status_code == 201
+    listed = client.get("/jobs").json()["jobs"]
+    children = [j for j in listed if j["url"].startswith("https://a.com/")]
+    assert len(children) == 3
+    assert all(j["output_dir"] == str(target) for j in children)
+
+
+def test_post_jobs_output_dir_expands_tilde(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``~/subdir`` must be expanded against the user's HOME so the UI can
+    accept the same shorthand a shell would."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    target = tmp_path / "Downloads" / "ytdl"
+    target.mkdir(parents=True)
+    r = client.post(
+        "/jobs",
+        json={"url": "https://yt/x", "output_dir": "~/Downloads/ytdl"},
+    )
+    assert r.status_code == 201
+    assert r.json()["output_dir"] == str(target)
+
+
+def test_post_jobs_output_dir_unresolvable_tilde_returns_400(
+    client: TestClient,
+) -> None:
+    """``~nosuchuser/...`` raises RuntimeError from expanduser; the API must
+    convert that to a 400, not let it surface as a 500."""
+    r = client.post(
+        "/jobs",
+        json={"url": "https://yt/x", "output_dir": "~nosuchuser_xyz_12345/foo"},
+    )
+    assert r.status_code == 400

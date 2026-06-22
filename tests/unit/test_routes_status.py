@@ -34,12 +34,15 @@ def test_status_returns_cookies_and_runtime_keys(client: TestClient) -> None:
         "deno",
         "ffmpeg",
         "subtitles_default",
+        "output_dir",
     }
     for key in ("deno", "ffmpeg"):
         assert set(body[key].keys()) == {"present", "path"}
         assert isinstance(body[key]["present"], bool)
         assert body[key]["path"] is None or isinstance(body[key]["path"], str)
     assert isinstance(body["subtitles_default"], bool)
+    assert isinstance(body["output_dir"], str)
+    assert body["output_dir"]
 
 
 def test_status_surfaces_subtitles_default(tmp_path: Path) -> None:

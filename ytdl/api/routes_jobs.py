@@ -47,16 +47,22 @@ def _resolve_output_dir(raw: str) -> str:
             status_code=400,
             detail="output_dir must be a writable directory",
         ) from None
+    # On POSIX, creating files inside a directory needs both write AND
+    # search/execute permission. A 0200 dir (write-only) would pass a
+    # plain W_OK check and then fail when yt-dlp tries to write — check
+    # both upfront so the failure is a 400 at submit time.
     if expanded.exists():
-        if not expanded.is_dir() or not os.access(expanded, os.W_OK):
+        if not expanded.is_dir() or not os.access(expanded, os.W_OK | os.X_OK):
             raise HTTPException(
                 status_code=400,
                 detail="output_dir must be a writable directory",
             )
     else:
         parent = expanded.parent
-        if not parent.exists() or not parent.is_dir() or not os.access(
-            parent, os.W_OK
+        if (
+            not parent.exists()
+            or not parent.is_dir()
+            or not os.access(parent, os.W_OK | os.X_OK)
         ):
             raise HTTPException(
                 status_code=400,

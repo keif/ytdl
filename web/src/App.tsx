@@ -6,7 +6,6 @@ import {
   createJobsFromPick,
   enrichUrls,
   fetchStatus,
-  getJob,
   listJobs,
   previewClear,
   previewUrl,
@@ -23,27 +22,6 @@ import { JobList } from "./components/JobList";
 import { useJobsStream } from "./hooks/useJobsStream";
 
 const PREVIEW_DEBOUNCE_MS = 500;
-// Lifecycle events that map cleanly to a single row update — fetch the
-// affected row and patch in state. `expanded` is intentionally not in
-// this set because the new children created during playlist expansion
-// are not separately announced on the bus; a full refresh is the only
-// way to learn about them.
-const LIFECYCLE_EVENTS = new Set([
-  "started",
-  "finished",
-  "failed",
-  "canceled",
-]);
-
-// Events that require a full /jobs refresh because we can't reconstruct
-// the new state granularly:
-//   - snapshot: server sent on connect/reconnect. We may have missed
-//     transitions while disconnected; the snapshot itself lists
-//     non-terminal jobs but doesn't carry full row data, so we re-sync.
-//   - expanded: a playlist parent just enqueued N new child rows. The
-//     child enqueues are not published to the bus, so a full refresh
-//     is the only way to see them.
-const FULL_REFRESH_EVENTS = new Set(["snapshot", "expanded"]);
 
 /**
  * Preview lifecycle for the URL the user is currently typing/pasting.
@@ -73,123 +51,46 @@ export default function App() {
   const previewDebounce = useRef<number | null>(null);
   const previewAbort = useRef<AbortController | null>(null);
 
-  // Per-row generation counter for issued lifecycle fetches. Each event
-  // bumps it; only the response whose value still matches at resolution
-  // gets to write. Closes the race where a slower fetch lands after a
-  // newer one for the same row.
-  const lifecycleGen = useRef<Map<string, number>>(new Map());
-
-  // Per-row counter for lifecycle responses that have ACTUALLY committed
-  // to state. The refresh merge consults this — not lifecycleGen — so a
-  // refresh only protects rows whose lifecycle WRITE finished during the
-  // refresh, not rows whose lifecycle fetch is merely in flight.
-  const lifecycleWritten = useRef<Map<string, number>>(new Map());
-
-  // Snapshot of committed lifecycle write-counts taken when refresh()
-  // starts; used to detect which rows had a lifecycle write COMMIT during
-  // the refresh. Those rows are preserved from current state instead of
-  // being replaced by the (older) /jobs response.
-  function snapshotLifecycleWrites(): Map<string, number> {
-    return new Map(lifecycleWritten.current);
-  }
-
-  // Monotonic counter for full /jobs refreshes. Bumped only when a
-  // refresh SUCCESSFULLY commits to state. Closes two related races:
-  //   - Two refreshes resolve out of order: the older one sees a higher
-  //     committed seq and drops its response.
-  //   - A lifecycle fetch checks this at issue and at resolve; if a
-  //     successful refresh happened in between, the lifecycle response
-  //     is dropped (refresh data is newer for that row).
-  // Crucially, refreshes that FAIL don't bump this — so a lifecycle
-  // fetch is never dropped on behalf of a refresh that never wrote
-  // anything.
+  // Monotonic counter for full /jobs refreshes. Each refresh() captures
+  // the next value before its fetch; only the response whose value still
+  // matches the latest at resolution gets to write. Closes the race
+  // where two refreshes (e.g., snapshot + expanded in quick succession)
+  // resolve out of order and the older one clobbers the newer one's
+  // discovery of new rows.
   const refreshSeq = useRef(0);
-  // Pending refresh sequence: how many refreshes have STARTED. The
-  // refresh function uses this to detect that a newer refresh is in
-  // flight and drop its own (older) write.
-  const refreshIssuedSeq = useRef(0);
 
   async function refresh() {
-    const issued = refreshIssuedSeq.current + 1;
-    refreshIssuedSeq.current = issued;
-    const before = snapshotLifecycleWrites();
-    let list: { jobs: Job[]; total: number };
-    try {
-      list = await listJobs();
-    } catch (e) {
-      // Roll back our claim on the issued seq so an earlier successful
-      // refresh that's still in flight can still write — its response
-      // is the only data the user is going to see.
-      if (refreshIssuedSeq.current === issued) {
-        refreshIssuedSeq.current = issued - 1;
-      }
-      throw e;
-    }
-    // Drop older response ONLY when a newer refresh has already
-    // SUCCESSFULLY committed (refreshSeq > issued). If a newer refresh
-    // is merely in flight, let our older successful response land —
-    // the newer one might fail, and then this would be the only
-    // non-stale data the UI has.
-    if (refreshSeq.current >= issued) {
+    const seq = refreshSeq.current + 1;
+    refreshSeq.current = seq;
+    const list = await listJobs();
+    if (refreshSeq.current !== seq) {
+      // A newer refresh() was kicked off and is responsible for the
+      // post-state. Drop this older response so we don't roll back the
+      // newer one's results.
       return;
     }
     setJobs((prev) => {
+      // For running rows, preserve the more-advanced progress fields
+      // that may have come from live SSE events while /jobs was
+      // fetching. The /jobs payload surfaces SQLite values that workers
+      // write throttled (1Hz); the SSE bus is unthrottled.
       const prevById = new Map(prev.map((j) => [j.id, j]));
-      const refreshIds = new Set(list.jobs.map((j) => j.id));
-
-      // 1. Walk the refresh payload, preferring in-state rows whose
-      //    lifecycle write COMMITTED during the refresh (i.e., the
-      //    in-state row is newer than what /jobs gave us). Also
-      //    preserve in-flight progress on running rows — the live
-      //    event stream can be ahead of the throttled DB progress
-      //    that /jobs surfaces.
-      const merged = list.jobs.map((row) => {
-        const beforeWrites = before.get(row.id) ?? 0;
-        const nowWrites = lifecycleWritten.current.get(row.id) ?? 0;
-        if (nowWrites > beforeWrites) {
-          const live = prevById.get(row.id);
-          if (live) return live;
-        }
-        // For running rows, preserve the more-advanced progress fields
-        // that may have come from live SSE events while /jobs was
-        // fetching.
-        if (row.status === "running") {
-          const live = prevById.get(row.id);
-          if (live && live.status === "running") {
-            return {
-              ...row,
-              bytes_done:
-                (live.bytes_done ?? 0) > (row.bytes_done ?? 0)
-                  ? live.bytes_done
-                  : row.bytes_done,
-              filesize_bytes: live.filesize_bytes ?? row.filesize_bytes,
-              speed_bps: live.speed_bps ?? row.speed_bps,
-              eta_s: live.eta_s ?? row.eta_s,
-            };
-          }
-        }
-        return row;
+      return list.jobs.map((row) => {
+        if (row.status !== "running") return row;
+        const live = prevById.get(row.id);
+        if (!live || live.status !== "running") return row;
+        return {
+          ...row,
+          bytes_done:
+            (live.bytes_done ?? 0) > (row.bytes_done ?? 0)
+              ? live.bytes_done
+              : row.bytes_done,
+          filesize_bytes: live.filesize_bytes ?? row.filesize_bytes,
+          speed_bps: live.speed_bps ?? row.speed_bps,
+          eta_s: live.eta_s ?? row.eta_s,
+        };
       });
-
-      // 2. Carry over any in-state rows that the refresh response is
-      //    MISSING — but only if their lifecycle generation incremented
-      //    during the refresh. Otherwise the row was legitimately
-      //    deleted server-side (e.g., queue clear) and shouldn't be
-      //    resurrected. Inserted at the top to match the lifecycle
-      //    handler's prepend behavior.
-      for (const live of prev) {
-        if (refreshIds.has(live.id)) continue;
-        const beforeWrites = before.get(live.id) ?? 0;
-        const nowWrites = lifecycleWritten.current.get(live.id) ?? 0;
-        if (nowWrites > beforeWrites) merged.unshift(live);
-      }
-
-      return merged;
     });
-    // Refresh committed successfully — set refreshSeq to the highest
-    // committed value so any in-flight lifecycle fetch that captured a
-    // lower seq at issue knows it's stale.
-    if (issued > refreshSeq.current) refreshSeq.current = issued;
   }
 
   async function refreshAll() {
@@ -304,7 +205,7 @@ export default function App() {
     // (e.g. "downloading", "finished") — NOT the queue's JobStatus
     // values. Don't overwrite job.status from progress events or the
     // row would flip to a non-running status and JobRow would hide the
-    // progress UI. Status only ever changes via lifecycle events.
+    // progress UI. Status only ever changes via the refresh() path.
     if (event.event === "progress" && event.job_id) {
       const jobId = event.job_id;
       setJobs((prev) =>
@@ -312,9 +213,6 @@ export default function App() {
           j.id === jobId
             ? {
                 ...j,
-                // Only overwrite when the event carries a non-null value;
-                // a null field means "downloader didn't report this one
-                // this tick" — keep the prior value.
                 bytes_done: event.downloaded_bytes ?? j.bytes_done,
                 filesize_bytes: event.total_bytes ?? j.filesize_bytes,
                 speed_bps: event.speed ?? j.speed_bps,
@@ -326,85 +224,14 @@ export default function App() {
       return;
     }
 
-    // Snapshot (initial connect / reconnect) and expanded (playlist
-    // children just appeared, no per-child bus events): the granular
-    // path can't reconstruct the new state, so fall back to a full
-    // refresh.
-    if (FULL_REFRESH_EVENTS.has(event.event)) {
-      refresh().catch(() => {});
-      return;
-    }
-
-    // Lifecycle: fetch the single row and merge into state. Insert if
-    // it's not in state yet (e.g., a freshly-enqueued job that wasn't
-    // in the initial /jobs listing).
-    //
-    // Guard against stale responses overwriting newer state by tracking
-    // a per-row generation: bump before the fetch, only apply the
-    // response if the generation still matches when the promise
-    // resolves.
-    if (LIFECYCLE_EVENTS.has(event.event) && event.job_id) {
-      const jobId = event.job_id;
-      const gen = (lifecycleGen.current.get(jobId) ?? 0) + 1;
-      lifecycleGen.current.set(jobId, gen);
-      // Snapshot the refresh sequence at fetch issue. If a refresh
-      // completes (resolves successfully) between now and when this
-      // lifecycle fetch resolves, our row data is stale — drop it.
-      const refreshSeqAtIssue = refreshSeq.current;
-      getJob(jobId)
-        .then((updated) => {
-          if (lifecycleGen.current.get(jobId) !== gen) {
-            // A newer lifecycle event has already fired (and may have
-            // already landed). Drop this response — it's stale.
-            return;
-          }
-          if (refreshSeq.current !== refreshSeqAtIssue) {
-            // A refresh started AFTER our fetch began and may have
-            // already written newer state for this row. Drop our
-            // response to avoid clobbering it.
-            return;
-          }
-          // Record that a lifecycle write committed for this row. The
-          // refresh merge consults this to decide whether to keep the
-          // in-state row over its own /jobs payload.
-          const writes = lifecycleWritten.current.get(jobId) ?? 0;
-          lifecycleWritten.current.set(jobId, writes + 1);
-          setJobs((prev) => {
-            const idx = prev.findIndex((j) => j.id === updated.id);
-            if (idx === -1) return [updated, ...prev];
-            const copy = [...prev];
-            // Preserve in-flight progress fields when applying a
-            // lifecycle row that's still in a non-terminal status. The
-            // /jobs/{id} response read from the DB can be behind the
-            // live event stream because workers write progress
-            // throttled (1Hz) to SQLite — the SSE bus is unthrottled.
-            // For terminal states we trust the lifecycle row entirely
-            // (it'll have final bytes_done/filesize_bytes).
-            const live = copy[idx];
-            const lifecycleIsRunning = updated.status === "running";
-            if (lifecycleIsRunning) {
-              copy[idx] = {
-                ...updated,
-                bytes_done:
-                  (live.bytes_done ?? 0) > (updated.bytes_done ?? 0)
-                    ? live.bytes_done
-                    : updated.bytes_done,
-                filesize_bytes: live.filesize_bytes ?? updated.filesize_bytes,
-                speed_bps: live.speed_bps ?? updated.speed_bps,
-                eta_s: live.eta_s ?? updated.eta_s,
-              };
-            } else {
-              copy[idx] = updated;
-            }
-            return copy;
-          });
-        })
-        .catch(() => {
-          // Single-job fetch failed (race with delete, network blip).
-          // Fall back to the full refresh as a safety net.
-          refresh().catch(() => {});
-        });
-    }
+    // Everything non-progress (snapshot, expanded, started, finished,
+    // failed, canceled): a single refresh() is the canonical path. The
+    // previous approach used getJob() per lifecycle event for "minimal"
+    // fetches, but the resulting race surface (multiple fetches in
+    // flight, out-of-order resolution against refresh()) wasn't worth
+    // it — lifecycle events are low frequency and progress is where
+    // the real perf win lives.
+    refresh().catch(() => {});
   });
 
   // ---- Submit handlers ----

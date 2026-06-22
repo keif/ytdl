@@ -220,6 +220,49 @@ def test_cli_queue_clear_rejects_negative_days(tmp_data_dir: Path) -> None:
     assert "must be >= 0" in result.output
 
 
+def test_warn_if_web_bundle_missing_prints_when_absent(
+    tmp_data_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """When ytdl/web/index.html doesn't exist (fresh clone, post-pnpm install),
+    `_warn_if_web_bundle_missing()` should print the actionable hint."""
+    # Monkeypatch the api module's __file__ to a tempdir whose parent has no
+    # web/index.html sibling.
+    import ytdl.api as api_pkg
+    from ytdl import cli as cli_mod
+
+    fake_pkg = tmp_data_dir / "fake_api_pkg"
+    fake_pkg.mkdir()
+    monkeypatch.setattr(api_pkg, "__file__", str(fake_pkg / "__init__.py"))
+
+    cli_mod._warn_if_web_bundle_missing()
+    captured = capsys.readouterr()
+    assert "no built bundle" in captured.out
+    assert "pnpm build" in captured.out
+
+
+def test_warn_if_web_bundle_missing_silent_when_present(
+    tmp_data_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """When the bundle exists, the helper should produce no output."""
+    import ytdl.api as api_pkg
+    from ytdl import cli as cli_mod
+
+    fake_pkg = tmp_data_dir / "fake_api_pkg"
+    fake_pkg.mkdir()
+    web_dir = tmp_data_dir / "web"
+    web_dir.mkdir()
+    (web_dir / "index.html").write_text("<!doctype html>")
+    monkeypatch.setattr(api_pkg, "__file__", str(fake_pkg / "__init__.py"))
+
+    cli_mod._warn_if_web_bundle_missing()
+    captured = capsys.readouterr()
+    assert captured.out == ""
+
+
 def test_format_bytes_per_second_handles_scale() -> None:
     from ytdl.cli import _format_bytes_per_second
 

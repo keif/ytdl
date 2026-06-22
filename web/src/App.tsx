@@ -441,7 +441,7 @@ export default function App() {
         <PreviewVideo
           entry={singleEntry}
           enriched={singleEnriched ?? undefined}
-          format={format}
+          format={audioOnly ? "audio_only" : format}
           onDownload={() => submitSingle(singleEntry.url)}
           busy={submitting}
         />

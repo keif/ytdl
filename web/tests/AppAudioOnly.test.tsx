@@ -192,7 +192,26 @@ describe("App audio-only toggle", () => {
     expect(audioCheckbox.checked).toBe(false);
   });
 
-  it("preserves audio-only when the user appends to the existing URL", async () => {
+  it("preserves audio-only when the user types one more character", async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByRole("checkbox", { name: /audio only/i })).toBeInTheDocument();
+    });
+
+    const audioCheckbox = screen.getByRole("checkbox", { name: /audio only/i }) as HTMLInputElement;
+    const input = screen.getByPlaceholderText(/Paste a YouTube URL/i) as HTMLInputElement;
+
+    fireEvent.change(input, { target: { value: "https://yt/abc" } });
+    await act(async () => {
+      audioCheckbox.click();
+    });
+    // Type ONE more character — the typing case.
+    fireEvent.change(input, { target: { value: "https://yt/abcd" } });
+
+    expect(audioCheckbox.checked).toBe(true);
+  });
+
+  it("resets audio-only on multi-character extension (paste-extend, not typing)", async () => {
     render(<App />);
     await waitFor(() => {
       expect(screen.getByRole("checkbox", { name: /audio only/i })).toBeInTheDocument();
@@ -205,10 +224,13 @@ describe("App audio-only toggle", () => {
     await act(async () => {
       audioCheckbox.click();
     });
-    // Type more characters — a strict extension of the current text.
-    fireEvent.change(input, { target: { value: "https://yt/abc" } });
-
     expect(audioCheckbox.checked).toBe(true);
+
+    // Paste-extend: the new value shares the prefix but adds 3+ chars at
+    // once, which is paste-shaped (not typing-shaped).
+    fireEvent.change(input, { target: { value: "https://yt/xyz" } });
+
+    expect(audioCheckbox.checked).toBe(false);
   });
 
   it("resets audio-only when the URL input is manually cleared", async () => {

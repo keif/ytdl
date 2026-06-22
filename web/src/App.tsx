@@ -400,13 +400,23 @@ export default function App() {
       <SubmitForm
         url={url}
         onUrlChange={(value) => {
-          // Audio-only is per-paste intent. Reset on any change that
-          // isn't a strict extension of the existing text — i.e. clear,
-          // select-all-paste-replace, or backspace-shorten all count as
-          // "the user is moving to a new URL." A single appended
-          // character (the typing case) preserves the checkbox so a
-          // mid-typing user doesn't lose their selection.
-          if (!value.startsWith(url)) setAudioOnly(false);
+          // Audio-only is per-paste intent. Reset on any non-typing
+          // change — clear, replace, backspace, or paste-extend.
+          //
+          // A "typing" change adds exactly one character to the end of
+          // the existing text (`value.startsWith(url) && value.length
+          // === url.length + 1`). Anything else (multi-char insertion
+          // from paste/autofill, select-all-paste of a longer URL that
+          // happens to share a prefix, backspace, full replace) means
+          // the user is moving to a different URL and the checkbox
+          // shouldn't silently carry over.
+          // Treat the empty-to-anything transition as a fresh start
+          // (the user set the checkbox BEFORE pasting). Otherwise,
+          // only a single-char append counts as typing.
+          const isFreshPaste = url === "" && value !== "";
+          const isTypingExtension =
+            value.startsWith(url) && value.length === url.length + 1;
+          if (!isFreshPaste && !isTypingExtension) setAudioOnly(false);
           setUrl(value);
         }}
         format={format}

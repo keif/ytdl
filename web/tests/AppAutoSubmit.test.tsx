@@ -18,6 +18,7 @@ describe("App auto-submit countdown", () => {
   let postedBodies: Array<Record<string, unknown>>;
   let previewResponder: () => Response;
   let statusResponder: () => Response;
+  let jobsPostResponder: () => Response;
 
   function jsonResponse(body: unknown, status = 200): Response {
     return new Response(JSON.stringify(body), {
@@ -37,7 +38,7 @@ describe("App auto-submit countdown", () => {
             : input.url;
       if (path === "/jobs" && init?.method === "POST") {
         postedBodies.push(JSON.parse((init.body as string) ?? "{}"));
-        return jsonResponse({ id: "j-1", status: "pending" });
+        return jobsPostResponder();
       }
       if (path === "/jobs" || path.startsWith("/jobs?")) {
         return jsonResponse({ jobs: [], total: 0 });
@@ -98,6 +99,7 @@ describe("App auto-submit countdown", () => {
           { url: "https://yt/x", id: "x", title: "Single Vid", position: 1 },
         ],
       });
+    jobsPostResponder = () => jsonResponse({ id: "j-1", status: "pending" });
     installFetchMock();
   });
 
@@ -325,6 +327,93 @@ describe("App auto-submit countdown", () => {
       await vi.advanceTimersByTimeAsync(10_000);
     });
     expect(postedBodies.length).toBe(0);
+  });
+
+  it("failed auto-submit does not loop POSTs every delay seconds", async () => {
+    jobsPostResponder = () => jsonResponse({ detail: "broken" }, 500);
+
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText(/Paste a YouTube URL/i)).toBeInTheDocument();
+    });
+
+    vi.useFakeTimers();
+    await pasteAndAwaitPreview("https://yt/x");
+
+    // Let the countdown elapse so the auto-submit fires once.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+      await Promise.resolve();
+    });
+    expect(postedBodies.length).toBe(1);
+
+    // Now spin the clock through several more countdown windows. Even
+    // though the submit failed and `submitting` flipped back to false
+    // (which re-fires the effect), the "already-attempted" lock must
+    // prevent restarting the countdown for the same URL.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+      await Promise.resolve();
+    });
+    expect(postedBodies.length).toBe(1);
+  });
+
+  it("cancelled countdown does not re-arm when /status re-resolves", async () => {
+    // Track how many /status calls we serve so we can force a "race"
+    // re-resolve by deliberately re-invoking the effect.
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText(/Paste a YouTube URL/i)).toBeInTheDocument();
+    });
+
+    vi.useFakeTimers();
+    await pasteAndAwaitPreview("https://yt/x");
+
+    // Cancel the banner.
+    const cancelBtn = screen.getByRole("button", { name: /cancel auto-submit/i });
+    await act(async () => {
+      fireEvent.click(cancelBtn);
+    });
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+
+    // Even after a generous wait — and even if a /status race or any
+    // other dep change re-fires the effect — the banner must stay gone
+    // for THIS URL. Nothing posts.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20_000);
+    });
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(postedBodies.length).toBe(0);
+  });
+
+  it("pasting a different URL after cancel starts a fresh countdown", async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText(/Paste a YouTube URL/i)).toBeInTheDocument();
+    });
+
+    vi.useFakeTimers();
+    await pasteAndAwaitPreview("https://yt/x");
+
+    // Cancel the first URL's countdown.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /cancel auto-submit/i }));
+    });
+
+    // Paste-replace with a different URL. The "already-attempted" lock
+    // for the previous URL must NOT block the new countdown.
+    previewResponder = () =>
+      jsonResponse({
+        kind: "video",
+        title: null,
+        entries: [
+          { url: "https://yt/y", id: "y", title: "Other Vid", position: 1 },
+        ],
+      });
+    await pasteAndAwaitPreview("https://yt/y");
+
+    // Fresh banner for the new URL.
+    expect(screen.getByRole("status")).toHaveTextContent(/Downloading in/i);
   });
 
   it("typing one more character during the countdown still cancels it", async () => {

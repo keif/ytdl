@@ -74,6 +74,11 @@ export default function App() {
     null,
   );
   const autoSubmitInterval = useRef<number | null>(null);
+  // Tracks the URL whose auto-submit was already attempted (fired, manually
+  // submitted, or explicitly cancelled) so a re-render of the effect doesn't
+  // restart the countdown for the same preview. Cleared when the URL changes
+  // to something different (the natural "user moved on" signal).
+  const autoSubmitAttemptedFor = useRef<string | null>(null);
   // The countdown effect captures submitSingle in its closure at scheduling
   // time. If the user toggles audio-only/subtitles/output-dir during the
   // window, we want the LATEST submit handler, not a stale one. The ref is
@@ -180,6 +185,11 @@ export default function App() {
       autoSubmitInterval.current = null;
     }
     setAutoSubmit(null);
+    // Mark the current preview URL as "already attempted" so the effect
+    // doesn't restart the countdown when its deps change (e.g. submitting
+    // flips back to false after a failed submit, /status re-resolves).
+    // Cleared when the user moves to a different URL.
+    if (singleEntry) autoSubmitAttemptedFor.current = singleEntry.url;
   }
 
   // ---- Preview fetch on URL change ----
@@ -436,6 +446,14 @@ export default function App() {
       if (autoSubmit !== null) setAutoSubmit(null);
       return;
     }
+    // Don't re-arm for a URL the user already cancelled OR a URL whose
+    // submit already fired (success or failure). Either case re-enters
+    // this effect when `submitting` flips back to false; without this
+    // guard, a failed submit would loop POSTs every `delay` seconds and
+    // a cancelled banner would come back unbidden.
+    if (autoSubmitAttemptedFor.current === singleEntry.url) {
+      return;
+    }
     // Capture the URL at countdown-start so a late tick (interleaved with
     // a URL edit that hadn't yet been observed by the effect) can't
     // submit a stale value.
@@ -456,6 +474,11 @@ export default function App() {
           autoSubmitInterval.current = null;
         }
         setAutoSubmit(null);
+        // Mark this URL as attempted BEFORE the submit fires. If the
+        // submit fails, the effect re-runs when `submitting` flips back
+        // to false; without this lock it would restart the countdown
+        // and loop POSTs every delay seconds.
+        autoSubmitAttemptedFor.current = entryUrl;
         // submitSingle() handles its own try/catch and clears the URL
         // on success; failures surface via submitError. Going through
         // the ref guarantees we use the freshest closure (with the
@@ -565,7 +588,14 @@ export default function App() {
           // time; a tick after the input has changed would submit the
           // stale value. A fresh countdown (if any) will start when the
           // new preview resolves.
-          if (value !== url) cancelAutoSubmit();
+          if (value !== url) {
+            cancelAutoSubmit();
+            // Moving to a different URL clears the "already-attempted"
+            // lock so the new preview gets a fresh countdown. Note this
+            // must happen AFTER cancelAutoSubmit() — that helper sets
+            // the lock to the previous URL, which we then drop here.
+            autoSubmitAttemptedFor.current = null;
+          }
           setUrl(value);
         }}
         format={format}

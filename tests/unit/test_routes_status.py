@@ -36,6 +36,7 @@ def test_status_returns_cookies_and_runtime_keys(client: TestClient) -> None:
         "subtitles_default",
         "output_dir",
         "autosubmit_delay_s",
+        "probe_timeout_s",
     }
     for key in ("deno", "ffmpeg"):
         assert set(body[key].keys()) == {"present", "path"}
@@ -48,6 +49,9 @@ def test_status_returns_cookies_and_runtime_keys(client: TestClient) -> None:
     # Default in Config() is 5 — assert exactly so a future change to the
     # default is caught here.
     assert body["autosubmit_delay_s"] == 5
+    # Default probe timeout — 30s. Catches accidental default drift.
+    assert isinstance(body["probe_timeout_s"], int)
+    assert body["probe_timeout_s"] == 30
 
 
 def test_status_surfaces_subtitles_default(tmp_path: Path) -> None:

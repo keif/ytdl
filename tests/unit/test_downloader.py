@@ -366,6 +366,41 @@ def test_build_ydl_options_omits_overwrites_by_default(tmp_path: Path) -> None:
     assert "continuedl" not in opts
 
 
+def test_build_ydl_options_sets_socket_timeout_from_ctx(tmp_path: Path) -> None:
+    """The ctx.probe_timeout_s field must flow into yt-dlp's socket_timeout.
+
+    Without this, a non-responsive HTTP socket would park the worker thread
+    indefinitely — the bug that motivated the timeout work.
+    """
+    from ytdl.downloader import _build_ydl_options
+
+    job = _make_job(tmp_path)
+    ctx = DownloadContext(
+        ydl_cls=None,
+        cookies_browser=None,
+        on_progress=lambda d: None,
+        cancel_flag=lambda: False,
+        probe_timeout_s=45,
+    )
+    opts = _build_ydl_options(job, ctx, ProgressThrottle())
+    assert opts["socket_timeout"] == 45
+
+
+def test_build_ydl_options_socket_timeout_defaults_to_thirty(tmp_path: Path) -> None:
+    """When ctx omits probe_timeout_s, the dataclass default (30) lands in opts."""
+    from ytdl.downloader import _build_ydl_options
+
+    job = _make_job(tmp_path)
+    ctx = DownloadContext(
+        ydl_cls=None,
+        cookies_browser=None,
+        on_progress=lambda d: None,
+        cancel_flag=lambda: False,
+    )
+    opts = _build_ydl_options(job, ctx, ProgressThrottle())
+    assert opts["socket_timeout"] == 30
+
+
 def test_download_aborts_when_cancel_flag_set(tmp_path: Path) -> None:
     from ytdl.downloader import DownloadCancelled
 

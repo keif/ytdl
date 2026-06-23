@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -22,10 +23,30 @@ def client(tmp_path: Path) -> TestClient:
     return TestClient(app)
 
 
+@pytest.fixture()
+def fast_timeout_client(tmp_path: Path) -> TestClient:
+    """Same app but with probe_timeout_s=1 so timeout tests resolve quickly.
+
+    The route wraps to_thread in wait_for(probe_timeout_s + 5), so a 1s probe
+    timeout means the test waits at most ~6s before the 504 fires.
+    """
+    cfg = Config(
+        output_dir=tmp_path / "out",
+        db_path=tmp_path / "ytdl.db",
+        workers=0,
+        cookies_browser=None,
+        default_format="best",
+        probe_timeout_s=1,
+    )
+    app = build_app(cfg)
+    return TestClient(app)
+
+
 def _patch_probe(monkeypatch: pytest.MonkeyPatch, info: dict) -> None:
     """Replace ytdl.api.routes_preview.probe so tests don't hit yt-dlp."""
     monkeypatch.setattr(
-        "ytdl.api.routes_preview.probe", lambda url, cookies_browser=None: info
+        "ytdl.api.routes_preview.probe",
+        lambda url, cookies_browser=None, socket_timeout=30: info,
     )
 
 
@@ -34,7 +55,7 @@ def _patch_probe_one(
 ) -> None:
     monkeypatch.setattr(
         "ytdl.api.routes_preview.probe_one",
-        lambda url, cookies_browser=None: by_url[url],
+        lambda url, cookies_browser=None, socket_timeout=30: by_url[url],
     )
 
 
@@ -128,7 +149,7 @@ def test_preview_rejects_non_http(client: TestClient) -> None:
 def test_preview_propagates_probe_failure_as_400(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def boom(url: str, cookies_browser: str | None = None) -> dict:
+    def boom(url: str, cookies_browser: str | None = None, socket_timeout: int = 30) -> dict:
         raise RuntimeError("nope")
 
     monkeypatch.setattr("ytdl.api.routes_preview.probe", boom)
@@ -174,7 +195,9 @@ def test_enrich_returns_metadata_per_url(
 def test_enrich_individual_failures_surface_in_response(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def fake_probe_one(url: str, cookies_browser: str | None = None) -> dict:
+    def fake_probe_one(
+        url: str, cookies_browser: str | None = None, socket_timeout: int = 30
+    ) -> dict:
         if url == "https://x/bad":
             raise RuntimeError("video unavailable")
         return {"title": "ok", "duration": 10, "uploader": "u", "thumbnail": "t"}
@@ -208,3 +231,113 @@ def test_enrich_rejects_non_http_member(client: TestClient) -> None:
         json={"urls": ["https://x/ok", "javascript:alert(1)"]},
     )
     assert r.status_code == 422
+
+
+# --- timeout behavior ---
+
+
+def _patch_to_thread_to_hang(monkeypatch: pytest.MonkeyPatch, sleep_for: float) -> None:
+    """Replace routes_preview.asyncio.to_thread so the route's wait_for fires.
+
+    The real to_thread would actually park a thread for `sleep_for` seconds;
+    we substitute a coroutine that just awaits asyncio.sleep, which is what
+    wait_for cancels. Net effect on the route under test is identical to a
+    truly wedged probe, but the test completes in milliseconds.
+    """
+
+    async def _slow_to_thread(func, *args, **kwargs):  # type: ignore[no-untyped-def]
+        await asyncio.sleep(sleep_for)
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "ytdl.api.routes_preview.asyncio.to_thread", _slow_to_thread
+    )
+
+
+def test_preview_returns_504_when_probe_times_out(
+    fast_timeout_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A probe that never returns must surface as a 504 with a clear message.
+
+    The route wraps to_thread in wait_for(probe_timeout_s + 5). With
+    probe_timeout_s=1, hang the probe for ~30s and verify wait_for fires
+    quickly (well before the artificial sleep) and the route reports 504.
+    """
+    _patch_to_thread_to_hang(monkeypatch, sleep_for=30.0)
+    # The probe target is never reached because to_thread is patched, but
+    # we still need a callable in the symbol table for the route's lambda.
+    _patch_probe(monkeypatch, {"_type": "video"})
+
+    r = fast_timeout_client.post(
+        "/preview", json={"url": "https://yt.example/v/stuck"}
+    )
+    assert r.status_code == 504
+    detail = r.json()["detail"]
+    assert "probe timed out" in detail
+    assert "cookies" in detail
+
+
+def test_preview_succeeds_when_probe_returns_quickly(
+    fast_timeout_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Happy path on the same fast_timeout_client fixture — confirms the
+    wait_for wrapper doesn't break normal returns."""
+    _patch_probe(
+        monkeypatch,
+        {
+            "_type": "video",
+            "title": "Fast",
+            "id": "ok",
+            "webpage_url": "https://yt.example/v/ok",
+        },
+    )
+    r = fast_timeout_client.post(
+        "/preview", json={"url": "https://yt.example/v/ok"}
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["kind"] == "video"
+    assert body["title"] == "Fast"
+
+
+def test_enrich_marks_per_url_timeout_without_failing_batch(
+    fast_timeout_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One slow URL must not poison the whole batch.
+
+    Replace asyncio.to_thread with a per-call hang/no-hang dispatcher: the
+    "stuck" URL sleeps past wait_for, others return immediately. The slow
+    entry's error field should read "probe timeout"; siblings succeed.
+    """
+    good_info = {
+        "title": "ok",
+        "duration": 10,
+        "uploader": "u",
+        "thumbnail": "t",
+    }
+    monkeypatch.setattr(
+        "ytdl.api.routes_preview.probe_one",
+        lambda url, cookies_browser=None, socket_timeout=30: good_info,
+    )
+
+    async def _per_url_to_thread(func, *args, **kwargs):  # type: ignore[no-untyped-def]
+        # First positional arg is the URL (probe_one's first arg).
+        url = args[0] if args else kwargs.get("url")
+        if url == "https://x/stuck":
+            await asyncio.sleep(30.0)
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "ytdl.api.routes_preview.asyncio.to_thread", _per_url_to_thread
+    )
+
+    r = fast_timeout_client.post(
+        "/preview/enrich",
+        json={"urls": ["https://x/good", "https://x/stuck"]},
+    )
+    assert r.status_code == 200
+    entries = {e["url"]: e for e in r.json()["entries"]}
+    assert entries["https://x/good"]["error"] is None
+    assert entries["https://x/good"]["title"] == "ok"
+    assert entries["https://x/stuck"]["error"] == "probe timeout"
+    assert entries["https://x/stuck"]["title"] is None

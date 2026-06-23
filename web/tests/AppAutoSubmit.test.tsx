@@ -90,6 +90,7 @@ describe("App auto-submit countdown", () => {
         subtitles_default: false,
         output_dir: "/tmp/out",
         autosubmit_delay_s: 5,
+        probe_timeout_s: 30,
       });
     previewResponder = () =>
       jsonResponse({
@@ -277,6 +278,7 @@ describe("App auto-submit countdown", () => {
         subtitles_default: false,
         output_dir: "/tmp/out",
         autosubmit_delay_s: 0,
+        probe_timeout_s: 30,
       });
 
     render(<App />);

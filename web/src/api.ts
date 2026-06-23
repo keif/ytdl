@@ -204,6 +204,10 @@ export interface StatusResponse {
   // auto-submitting. The UI reads this on mount so the countdown banner uses
   // the configured default. A value of 0 disables the auto-submit flow.
   autosubmit_delay_s: number;
+  // Upper bound on a single yt-dlp probe (preview or per-URL enrichment).
+  // Surfaced so a future PR can show "Probe timeout: 30s" in the settings
+  // panel — typed access only for now.
+  probe_timeout_s: number;
 }
 
 export async function fetchStatus(): Promise<StatusResponse> {

@@ -81,12 +81,41 @@ class EnrichResponse(BaseModel):
     entries: list[EnrichedEntry]
 
 
+_PROBE_TIMEOUT_DETAIL = (
+    "probe timed out — the site may be slow, blocking us, or require "
+    "cookies. Try waiting or check `ytdl cookies status`."
+)
+
+
 @router.post("/preview", response_model=PreviewResponse)
 async def post_preview(payload: PreviewRequest, request: Request) -> PreviewResponse:
     cfg = request.app.state.config
     cookies = cfg.cookies_browser
+    probe_timeout = cfg.probe_timeout_s
+    # Belt and suspenders: pass socket_timeout to yt-dlp AND wrap the
+    # to_thread call in wait_for. The +5s wait_for grace lets yt-dlp's
+    # own socket_timeout fire and surface a normal probe error before
+    # the asyncio guard kicks in.
+    #
+    # IMPORTANT: asyncio.wait_for cancellation does NOT actually kill the
+    # underlying thread. If yt-dlp truly wedges, the thread keeps running
+    # and the executor slot stays occupied. N consecutive hangs can fill
+    # the default executor pool. We accept this for the short-term fix
+    # because the API stays responsive (this coroutine returns) and the
+    # user can still cancel the URL in the UI. A future PR can move probes
+    # to a subprocess for true cancellation.
     try:
-        info = await asyncio.to_thread(probe, payload.url, cookies_browser=cookies)
+        info = await asyncio.wait_for(
+            asyncio.to_thread(
+                probe,
+                payload.url,
+                cookies_browser=cookies,
+                socket_timeout=probe_timeout,
+            ),
+            timeout=probe_timeout + 5,
+        )
+    except TimeoutError as exc:
+        raise HTTPException(status_code=504, detail=_PROBE_TIMEOUT_DETAIL) from exc
     except BaseException as exc:
         raise HTTPException(status_code=400, detail=f"probe failed: {exc}") from exc
 
@@ -115,15 +144,27 @@ async def post_preview(payload: PreviewRequest, request: Request) -> PreviewResp
 async def post_enrich(payload: EnrichRequest, request: Request) -> EnrichResponse:
     cfg = request.app.state.config
     cookies = cfg.cookies_browser
+    probe_timeout = cfg.probe_timeout_s
 
     sem = asyncio.Semaphore(_ENRICH_CONCURRENCY)
 
     async def fetch_one(url: str) -> EnrichedEntry:
+        # Per-URL timeout means one slow video doesn't block the whole
+        # batch — the other entries still resolve. Same wait_for caveat
+        # as post_preview: the thread keeps running after wait_for cancels.
         async with sem:
             try:
-                info = await asyncio.to_thread(
-                    probe_one, url, cookies_browser=cookies
+                info = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        probe_one,
+                        url,
+                        cookies_browser=cookies,
+                        socket_timeout=probe_timeout,
+                    ),
+                    timeout=probe_timeout + 5,
                 )
+            except TimeoutError:
+                return EnrichedEntry(url=url, error="probe timeout")
             except BaseException as exc:
                 return EnrichedEntry(url=url, error=str(exc))
         return EnrichedEntry(

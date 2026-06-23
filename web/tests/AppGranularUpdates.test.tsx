@@ -17,6 +17,7 @@ function statusResponse() {
       deno: { present: true, path: "/usr/bin/deno" },
       ffmpeg: { present: true, path: "/usr/bin/ffmpeg" },
       subtitles_default: false,
+      probe_timeout_s: 30,
     }),
     { status: 200, headers: { "content-type": "application/json" } },
   );

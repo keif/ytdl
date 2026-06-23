@@ -677,12 +677,16 @@ async def test_cancel_during_probe_with_empty_playlist_marks_parent_canceled(
 
 
 def test_default_probe_adapter_forwards_cookies(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The supervisor's default probe path must pass the configured browser to yt-dlp."""
+    """The supervisor's default probe path must pass the configured browser and
+    socket timeout through to yt-dlp."""
     captured: dict = {}
 
-    def fake_probe(url: str, *, cookies_browser: str | None = None) -> dict:
+    def fake_probe(
+        url: str, *, cookies_browser: str | None = None, socket_timeout: int = 30
+    ) -> dict:
         captured["url"] = url
         captured["cookies_browser"] = cookies_browser
+        captured["socket_timeout"] = socket_timeout
         return {"_type": "video"}
 
     import ytdl.downloader
@@ -691,5 +695,11 @@ def test_default_probe_adapter_forwards_cookies(monkeypatch: pytest.MonkeyPatch)
 
     from ytdl.workers import _default_probe_adapter
 
-    _default_probe_adapter("https://yt/x", cookies_browser="chrome")
-    assert captured == {"url": "https://yt/x", "cookies_browser": "chrome"}
+    _default_probe_adapter(
+        "https://yt/x", cookies_browser="chrome", socket_timeout=45
+    )
+    assert captured == {
+        "url": "https://yt/x",
+        "cookies_browser": "chrome",
+        "socket_timeout": 45,
+    }

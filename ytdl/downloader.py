@@ -140,6 +140,11 @@ class DownloadContext:
     # DownloadContext (rather than _build_ydl_options' signature) so adding
     # more knobs later doesn't keep growing the function parameter list.
     subtitle_langs: tuple[str, ...] | list[str] = ("en",)
+    # Bounds yt-dlp's HTTP socket reads so a wedged server can't park a
+    # worker thread forever. Mirrors the same knob applied to probe() —
+    # the actual download path benefits too, since a hung mid-fetch socket
+    # would otherwise pin the executor until the connection RST'd.
+    probe_timeout_s: int = 30
 
 
 @dataclass
@@ -178,6 +183,10 @@ def _build_ydl_options(job, ctx: DownloadContext, throttle: ProgressThrottle) ->
         # video formats are returned ("Requested format is not available").
         # See https://github.com/yt-dlp/yt-dlp/wiki/EJS.
         "remote_components": ["ejs:github"],
+        # Bound HTTP reads so a wedged socket can't park the worker thread
+        # forever. yt-dlp's default leaves this unset, which is how a single
+        # bad URL would otherwise eventually fill the executor pool.
+        "socket_timeout": ctx.probe_timeout_s,
     }
     if ctx.cookies_browser:
         opts["cookiesfrombrowser"] = (ctx.cookies_browser,)
@@ -213,7 +222,12 @@ def _build_ydl_options(job, ctx: DownloadContext, throttle: ProgressThrottle) ->
     return opts
 
 
-def probe(url: str, *, cookies_browser: str | None = None) -> dict:
+def probe(
+    url: str,
+    *,
+    cookies_browser: str | None = None,
+    socket_timeout: int = 30,
+) -> dict:
     """Flat-extract metadata without downloading. Returns yt-dlp's info dict.
 
     Uses extract_flat='in_playlist' so playlist entries return as lightweight
@@ -223,6 +237,12 @@ def probe(url: str, *, cookies_browser: str | None = None) -> dict:
     treated as a single video with playlist context, not as the playlist
     itself. Pure playlist URLs (?list=PLxxx with no ?v=) are still detected
     as playlists because there's no video to anchor to.
+
+    ``socket_timeout`` bounds yt-dlp's HTTP reads. Without it, certain
+    YouTube URLs (e.g. an unavailable video or an anti-bot challenge gone
+    sideways) can hang the worker thread indefinitely. The caller wraps
+    asyncio.to_thread in wait_for as a backstop in case yt-dlp ignores
+    this knob on some code path.
     """
     from yt_dlp import YoutubeDL
 
@@ -232,6 +252,7 @@ def probe(url: str, *, cookies_browser: str | None = None) -> dict:
         "skip_download": True,
         "noplaylist": True,
         "remote_components": ["ejs:github"],
+        "socket_timeout": socket_timeout,
     }
     if cookies_browser:
         opts["cookiesfrombrowser"] = (cookies_browser,)
@@ -239,11 +260,18 @@ def probe(url: str, *, cookies_browser: str | None = None) -> dict:
         return ydl.extract_info(url, download=False, process=False)
 
 
-def probe_one(url: str, *, cookies_browser: str | None = None) -> dict:
+def probe_one(
+    url: str,
+    *,
+    cookies_browser: str | None = None,
+    socket_timeout: int = 30,
+) -> dict:
     """Full per-video metadata (title, duration, uploader, thumbnail).
 
     Slower than ``probe()`` — one HTTP fetch per call. Use for lazy
     enrichment after a flat preview, not for upfront playlist listing.
+
+    Same ``socket_timeout`` semantics as ``probe()``.
     """
     from yt_dlp import YoutubeDL
 
@@ -252,6 +280,7 @@ def probe_one(url: str, *, cookies_browser: str | None = None) -> dict:
         "skip_download": True,
         "noplaylist": True,
         "remote_components": ["ejs:github"],
+        "socket_timeout": socket_timeout,
     }
     if cookies_browser:
         opts["cookiesfrombrowser"] = (cookies_browser,)

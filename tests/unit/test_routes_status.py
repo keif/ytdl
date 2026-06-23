@@ -35,6 +35,7 @@ def test_status_returns_cookies_and_runtime_keys(client: TestClient) -> None:
         "ffmpeg",
         "subtitles_default",
         "output_dir",
+        "autosubmit_delay_s",
     }
     for key in ("deno", "ffmpeg"):
         assert set(body[key].keys()) == {"present", "path"}
@@ -43,6 +44,10 @@ def test_status_returns_cookies_and_runtime_keys(client: TestClient) -> None:
     assert isinstance(body["subtitles_default"], bool)
     assert isinstance(body["output_dir"], str)
     assert body["output_dir"]
+    assert isinstance(body["autosubmit_delay_s"], int)
+    # Default in Config() is 5 — assert exactly so a future change to the
+    # default is caught here.
+    assert body["autosubmit_delay_s"] == 5
 
 
 def test_status_surfaces_subtitles_default(tmp_path: Path) -> None:
@@ -60,6 +65,40 @@ def test_status_surfaces_subtitles_default(tmp_path: Path) -> None:
     c = TestClient(build_app(cfg))
     body = c.get("/status").json()
     assert body["subtitles_default"] is True
+
+
+def test_status_surfaces_autosubmit_delay(tmp_path: Path) -> None:
+    """The countdown delay is read by the UI on mount; /status must surface
+    the configured value so the banner uses the same default as the server."""
+    cfg = Config(
+        output_dir=tmp_path / "out",
+        db_path=tmp_path / "ytdl.db",
+        workers=0,
+        cookies_browser=None,
+        cookies_source="none",
+        default_format="best",
+        autosubmit_delay_s=10,
+    )
+    c = TestClient(build_app(cfg))
+    body = c.get("/status").json()
+    assert body["autosubmit_delay_s"] == 10
+
+
+def test_status_surfaces_disabled_autosubmit(tmp_path: Path) -> None:
+    """A delay of 0 disables the feature. /status reports it verbatim so the
+    UI can short-circuit the countdown without inferring intent."""
+    cfg = Config(
+        output_dir=tmp_path / "out",
+        db_path=tmp_path / "ytdl.db",
+        workers=0,
+        cookies_browser=None,
+        cookies_source="none",
+        default_format="best",
+        autosubmit_delay_s=0,
+    )
+    c = TestClient(build_app(cfg))
+    body = c.get("/status").json()
+    assert body["autosubmit_delay_s"] == 0
 
 
 def test_status_reflects_missing_deno(

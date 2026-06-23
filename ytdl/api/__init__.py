@@ -91,6 +91,11 @@ def build_app(config: Config) -> FastAPI:
             # "Save to" override can show what the server would use as
             # the placeholder when the field is left blank.
             "output_dir": str(cfg.output_dir),
+            # Seconds the UI waits before auto-submitting a single-video
+            # preview. The UI reads this on mount so the countdown banner
+            # uses the configured default. A value of 0 disables the
+            # auto-submit flow entirely.
+            "autosubmit_delay_s": cfg.autosubmit_delay_s,
         }
 
     # Serve the built Vite bundle when present. The Dockerfile copies the

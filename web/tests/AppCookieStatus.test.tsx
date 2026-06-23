@@ -40,6 +40,7 @@ describe("App cookies status", () => {
             deno: { present: true, path: "/usr/local/bin/deno" },
             ffmpeg: { present: true, path: "/usr/local/bin/ffmpeg" },
             subtitles_default: false,
+            probe_timeout_s: 30,
           }),
           { status: 200, headers: { "content-type": "application/json" } },
         );
@@ -102,6 +103,7 @@ describe("App runtime missing-binary warnings", () => {
             deno: { present: false, path: null },
             ffmpeg: { present: false, path: null },
             subtitles_default: false,
+            probe_timeout_s: 30,
           }),
           { status: 200, headers: { "content-type": "application/json" } },
         );

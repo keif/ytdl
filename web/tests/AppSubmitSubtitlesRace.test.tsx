@@ -64,6 +64,7 @@ describe("App submit subtitles load race", () => {
             deno: { present: true, path: null },
             ffmpeg: { present: true, path: null },
             subtitles_default: true,
+            probe_timeout_s: 30,
           }),
           { status: 200, headers: { "content-type": "application/json" } },
         );
@@ -161,6 +162,7 @@ describe("App submit subtitles load race", () => {
             deno: { present: true, path: null },
             ffmpeg: { present: true, path: null },
             subtitles_default: true,
+            probe_timeout_s: 30,
           }),
           { status: 200, headers: { "content-type": "application/json" } },
         );

@@ -209,6 +209,57 @@ def test_autosubmit_delay_loads_from_toml(tmp_data_dir: Path) -> None:
     assert cfg.autosubmit_delay_s == 7
 
 
+def test_probe_timeout_defaults_to_thirty(tmp_data_dir: Path) -> None:
+    """No env, no TOML — the dataclass default (30s) flows through."""
+    cfg = load_config()
+    assert cfg.probe_timeout_s == 30
+
+
+def test_probe_timeout_env_override(
+    tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Env wins over the default; integer values pass through unchanged."""
+    monkeypatch.setenv("YTDL_PROBE_TIMEOUT_S", "60")
+    cfg = load_config()
+    assert cfg.probe_timeout_s == 60
+
+
+def test_probe_timeout_zero_rejected(
+    tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 0-second timeout would fail every probe instantly; reject so the
+    operator notices the misconfiguration at startup."""
+    monkeypatch.setenv("YTDL_PROBE_TIMEOUT_S", "0")
+    with pytest.raises(ValueError, match="probe_timeout_s"):
+        load_config()
+
+
+def test_probe_timeout_negative_rejected(
+    tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Negative seconds aren't physically meaningful."""
+    monkeypatch.setenv("YTDL_PROBE_TIMEOUT_S", "-5")
+    with pytest.raises(ValueError, match="probe_timeout_s"):
+        load_config()
+
+
+def test_probe_timeout_malformed_env_raises_clear_message(
+    tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Non-integer env values get a targeted error."""
+    monkeypatch.setenv("YTDL_PROBE_TIMEOUT_S", "abc")
+    with pytest.raises(ValueError, match="YTDL_PROBE_TIMEOUT_S"):
+        load_config()
+
+
+def test_probe_timeout_loads_from_toml(tmp_data_dir: Path) -> None:
+    cfg_path = tmp_data_dir / "config" / "ytdl" / "config.toml"
+    cfg_path.parent.mkdir(parents=True)
+    cfg_path.write_text("probe_timeout_s = 45\n")
+    cfg = load_config()
+    assert cfg.probe_timeout_s == 45
+
+
 def test_load_config_sets_cookies_source_autodetect_or_none(
     tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

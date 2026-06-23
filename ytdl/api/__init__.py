@@ -37,6 +37,7 @@ def build_app(config: Config) -> FastAPI:
                 bus=bus,
                 cookies_browser=config.cookies_browser,
                 subtitle_langs=config.subtitle_langs,
+                probe_timeout_s=config.probe_timeout_s,
             )
             await supervisor.start()
             app.state.supervisor = supervisor
@@ -96,6 +97,11 @@ def build_app(config: Config) -> FastAPI:
             # uses the configured default. A value of 0 disables the
             # auto-submit flow entirely.
             "autosubmit_delay_s": cfg.autosubmit_delay_s,
+            # Probe timeout (seconds) — surfaced so the UI can hint to the
+            # user how long a hung preview will wait before the server
+            # returns a 504. Configurable via YTDL_PROBE_TIMEOUT_S or the
+            # probe_timeout_s TOML key.
+            "probe_timeout_s": cfg.probe_timeout_s,
         }
 
     # Serve the built Vite bundle when present. The Dockerfile copies the

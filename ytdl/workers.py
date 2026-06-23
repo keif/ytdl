@@ -91,6 +91,7 @@ class Supervisor:
         bus: EventsBus,
         cookies_browser: str | None,
         subtitle_langs: tuple[str, ...] | list[str] = ("en",),
+        probe_timeout_s: int = 30,
         downloader: Downloader | None = None,
         probe: Callable[[str], dict] | None = None,
         retry_delays_s: tuple[int, ...] = (2, 8),
@@ -101,14 +102,18 @@ class Supervisor:
         self._bus = bus
         self._cookies = cookies_browser
         self._subtitle_langs: tuple[str, ...] = tuple(subtitle_langs) or ("en",)
+        self._probe_timeout_s = probe_timeout_s
         self._download: Downloader = downloader or _default_download_adapter
         if probe is not None:
             self._probe: Callable[[str], dict] = probe
         else:
             _cookies = cookies_browser
+            _timeout = probe_timeout_s
 
             def _adapter(url: str) -> dict:
-                return _default_probe_adapter(url, cookies_browser=_cookies)
+                return _default_probe_adapter(
+                    url, cookies_browser=_cookies, socket_timeout=_timeout
+                )
 
             self._probe = _adapter
         self._retry_delays = retry_delays_s
@@ -547,6 +552,7 @@ class Supervisor:
             on_progress=on_progress,
             cancel_flag=cancel_flag,
             subtitle_langs=self._subtitle_langs,
+            probe_timeout_s=self._probe_timeout_s,
         )
 
         Path(job.output_dir).mkdir(parents=True, exist_ok=True)
@@ -674,12 +680,15 @@ def _default_download_adapter(job, ctx: DownloadContext) -> DownloadResult:
         cancel_flag=ctx.cancel_flag,
         throttle_interval_s=ctx.throttle_interval_s,
         subtitle_langs=ctx.subtitle_langs,
+        probe_timeout_s=ctx.probe_timeout_s,
     )
     return default_download(job, real_ctx)
 
 
-def _default_probe_adapter(url: str, *, cookies_browser: str | None = None) -> dict:
+def _default_probe_adapter(
+    url: str, *, cookies_browser: str | None = None, socket_timeout: int = 30
+) -> dict:
     """Lazy default that delegates to the downloader's probe helper."""
     from ytdl.downloader import probe as _probe
 
-    return _probe(url, cookies_browser=cookies_browser)
+    return _probe(url, cookies_browser=cookies_browser, socket_timeout=socket_timeout)

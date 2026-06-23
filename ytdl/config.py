@@ -46,6 +46,13 @@ class Config:
     # user can cancel at any time during the window. A value of 0 disables
     # the feature entirely — the user must click Download manually.
     autosubmit_delay_s: int = 5
+    # Upper bound on a single yt-dlp probe (POST /preview, POST /preview/enrich).
+    # Threaded through to yt-dlp as `socket_timeout` AND wrapped around the
+    # asyncio.to_thread call as a wait_for window so a wedged probe can't
+    # hold a request thread forever. A normal probe takes 1-3s; 30s is the
+    # "something is very wrong" cliff. See downloader.probe / routes_preview
+    # for the two layers of enforcement.
+    probe_timeout_s: int = 30
 
 
 def _default_output_dir() -> Path:
@@ -138,6 +145,13 @@ def _env_overrides() -> dict:
             raise ValueError(
                 f"invalid YTDL_AUTOSUBMIT_DELAY_S={v!r}: must be an integer"
             ) from exc
+    if v := os.environ.get("YTDL_PROBE_TIMEOUT_S"):
+        try:
+            out["probe_timeout_s"] = int(v)
+        except ValueError as exc:
+            raise ValueError(
+                f"invalid YTDL_PROBE_TIMEOUT_S={v!r}: must be an integer"
+            ) from exc
     return out
 
 
@@ -181,6 +195,18 @@ def load_config() -> Config:
     autosubmit_delay_s = int(raw.get("autosubmit_delay_s", 5))
     if autosubmit_delay_s < 0:
         raise ValueError("autosubmit_delay_s must be >= 0")
+    # Coerce probe_timeout_s carefully — TOML may hand us a string, env
+    # parsing above already int-coerced. A 0/negative value would mean
+    # "give up immediately"; that's never what the user wants, so reject.
+    raw_probe = raw.get("probe_timeout_s", 30)
+    try:
+        probe_timeout_s = int(raw_probe)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"invalid probe_timeout_s={raw_probe!r}: must be an integer"
+        ) from exc
+    if probe_timeout_s < 1:
+        raise ValueError("probe_timeout_s must be >= 1")
     return Config(
         output_dir=Path(raw.get("output_dir", _default_output_dir())),
         db_path=Path(raw.get("db_path", _default_db_path())),
@@ -192,4 +218,5 @@ def load_config() -> Config:
         subtitles_default=subtitles_default,
         subtitle_langs=tuple(subtitle_langs),
         autosubmit_delay_s=autosubmit_delay_s,
+        probe_timeout_s=probe_timeout_s,
     )

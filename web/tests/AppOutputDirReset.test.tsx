@@ -42,6 +42,7 @@ describe("App output_dir per-paste reset", () => {
             ffmpeg: { present: true, path: null },
             subtitles_default: false,
             output_dir: "/home/u/Videos/ytdl",
+            probe_timeout_s: 30,
           }),
           { status: 200, headers: { "content-type": "application/json" } },
         );

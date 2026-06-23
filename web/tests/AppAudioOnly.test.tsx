@@ -41,6 +41,7 @@ describe("App audio-only toggle", () => {
             deno: { present: true, path: null },
             ffmpeg: { present: true, path: null },
             subtitles_default: false,
+            probe_timeout_s: 30,
           }),
           { status: 200, headers: { "content-type": "application/json" } },
         );

@@ -404,6 +404,11 @@ export default function App() {
     // preview to idle (aborting any pending /preview), which is exactly
     // what we want for the rapid-queue flow.
     setUrl("");
+    // Sync urlRef inline so the catch path's read is accurate even when
+    // /jobs rejects synchronously (fast 4xx, immediately rejected mock).
+    // The [url] useEffect runs AFTER render, so without this we could
+    // skip the failure-restore entirely.
+    urlRef.current = "";
     setAudioOnly(false);
     setOutputDir("");
     setPreview({ kind: "idle" });
@@ -428,6 +433,7 @@ export default function App() {
       // updater double-invocation pattern.
       if (urlRef.current === "") {
         setUrl(entryUrl);
+        urlRef.current = entryUrl;
         setAudioOnly(snapshotAudioOnly);
         setOutputDir(snapshotOutputDir);
       }

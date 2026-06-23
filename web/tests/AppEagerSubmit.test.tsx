@@ -665,6 +665,60 @@ describe("App eager submit (Queue button + Enter)", () => {
     globalThis.fetch = originalMock;
   });
 
+  it("restores URL even when /jobs rejects synchronously (no useEffect has run yet)", async () => {
+    // Codex review: urlRef is updated by a [url] useEffect, which runs
+    // AFTER render. If /jobs rejects in the same microtask as setUrl(''),
+    // the catch reads urlRef before the effect has fired, sees the old
+    // URL, and skips restoration. submitSingle now syncs urlRef.current
+    // inline at the synchronous clear.
+    const originalMock = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      if (path === "/jobs" && init?.method === "POST") {
+        postedBodies.push(JSON.parse((init.body as string) ?? "{}"));
+        // Reject immediately — no async delay. This is the timing codex
+        // identified as the race window.
+        return jsonResponse({ detail: "fast rejection" }, 400);
+      }
+      if (path === "/jobs" || path.startsWith("/jobs?")) {
+        return jsonResponse({ jobs: [], total: 0 });
+      }
+      if (path === "/status") return statusResponder();
+      if (path === "/preview") return jsonResponse({ detail: "n/a" }, 400);
+      if (path === "/preview/enrich") return jsonResponse({ entries: [] });
+      if (path.startsWith("/jobs/clear/preview")) {
+        return jsonResponse({ clearable: 0, older_than_days: 7 });
+      }
+      return new Response("not found", { status: 404 });
+    }) as unknown as typeof globalThis.fetch;
+
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /^Queue$/ })).toBeInTheDocument();
+    });
+
+    const input = screen.getByPlaceholderText(/Paste a YouTube URL/i) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "https://yt/x" } });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Queue$/ }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // URL must come back even on a fast-rejection path.
+    await waitFor(() => {
+      expect(input.value).toBe("https://yt/x");
+    });
+
+    globalThis.fetch = originalMock;
+  });
+
   it("Queue button stays disabled until the URL passes the shape check", async () => {
     render(<App />);
     await waitFor(() => {

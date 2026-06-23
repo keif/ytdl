@@ -101,7 +101,7 @@ def test_preview_command_prints_entries(
 ) -> None:
     monkeypatch.setattr(
         "ytdl.downloader.probe",
-        lambda url, cookies_browser=None: {
+        lambda url, cookies_browser=None, socket_timeout=30: {
             "_type": "playlist",
             "title": "PL",
             "entries": [
@@ -114,6 +114,29 @@ def test_preview_command_prints_entries(
     assert result.exit_code == 0
     assert "Alpha" in result.output
     assert "Bravo" in result.output
+
+
+def test_preview_command_threads_probe_timeout_from_config(
+    tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The CLI must honor cfg.probe_timeout_s instead of falling back to
+    the 30s default. Mirrors the codex finding on PR #46: server respected
+    the override but CLI paths bypassed it."""
+    monkeypatch.setenv("YTDL_PROBE_TIMEOUT_S", "7")
+    seen: dict = {}
+
+    def fake_probe(url, cookies_browser=None, socket_timeout=30):
+        seen["socket_timeout"] = socket_timeout
+        return {
+            "_type": "playlist",
+            "title": "PL",
+            "entries": [{"id": "a", "title": "Alpha", "webpage_url": "https://x/a"}],
+        }
+
+    monkeypatch.setattr("ytdl.downloader.probe", fake_probe)
+    result = runner.invoke(app, ["preview", "https://x/list"])
+    assert result.exit_code == 0
+    assert seen.get("socket_timeout") == 7
 
 
 def test_cli_queue_retry_creates_new_job(
@@ -305,7 +328,7 @@ def test_queue_add_with_pick_only_enqueues_picked(
 ) -> None:
     monkeypatch.setattr(
         "ytdl.downloader.probe",
-        lambda url, cookies_browser=None: {
+        lambda url, cookies_browser=None, socket_timeout=30: {
             "_type": "playlist",
             "title": "PL",
             "entries": [

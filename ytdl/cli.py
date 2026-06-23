@@ -62,15 +62,22 @@ def _parse_pick(spec: str, *, max_index: int) -> list[int]:
     return sorted(selected)
 
 
-def _preview_entries(url: str, cookies_browser: str | None) -> tuple[str, list[dict]]:
+def _preview_entries(
+    url: str,
+    cookies_browser: str | None,
+    *,
+    socket_timeout: int = 30,
+) -> tuple[str, list[dict]]:
     """Run a flat probe and normalize into (kind, [{url,title,position}]).
 
     Used by both `preview` and the `--pick` paths so the index numbering
-    stays consistent across commands.
+    stays consistent across commands. `socket_timeout` bounds individual
+    HTTP reads inside yt-dlp; pass the configured `cfg.probe_timeout_s`
+    so CLI behavior matches the server.
     """
     from ytdl.downloader import probe
 
-    info = probe(url, cookies_browser=cookies_browser)
+    info = probe(url, cookies_browser=cookies_browser, socket_timeout=socket_timeout)
     kind = "playlist" if info.get("_type") == "playlist" else "video"
     raw_entries = info.get("entries") if kind == "playlist" else [info]
     entries: list[dict] = []
@@ -98,6 +105,7 @@ def _download_one(
     cookies_browser: str | None,
     subtitles: bool = False,
     subtitle_langs: tuple[str, ...] | list[str] = ("en",),
+    probe_timeout_s: int = 30,
 ) -> None:
     """Synchronously download a single URL, printing percent progress."""
     from yt_dlp import YoutubeDL  # late import to keep CLI startup snappy
@@ -136,6 +144,7 @@ def _download_one(
         on_progress=on_progress,
         cancel_flag=lambda: False,
         subtitle_langs=tuple(subtitle_langs) or ("en",),
+        probe_timeout_s=probe_timeout_s,
     )
     console.print(f"[bold]Downloading[/bold] {url}")
     result = download(job, ctx)
@@ -181,10 +190,13 @@ def get(
             cookies_browser=cfg.cookies_browser,
             subtitles=subs,
             subtitle_langs=cfg.subtitle_langs,
+            probe_timeout_s=cfg.probe_timeout_s,
         )
         return
 
-    kind, entries = _preview_entries(url, cfg.cookies_browser)
+    kind, entries = _preview_entries(
+        url, cfg.cookies_browser, socket_timeout=cfg.probe_timeout_s
+    )
     if kind != "playlist" or not entries:
         raise typer.BadParameter(
             "--pick requires a playlist URL with at least one entry"
@@ -204,6 +216,7 @@ def get(
             cookies_browser=cfg.cookies_browser,
             subtitles=subs,
             subtitle_langs=cfg.subtitle_langs,
+            probe_timeout_s=cfg.probe_timeout_s,
         )
 
 
@@ -217,7 +230,9 @@ def preview(
     the index shown in the leftmost column.
     """
     cfg = load_config()
-    kind, entries = _preview_entries(url, cfg.cookies_browser)
+    kind, entries = _preview_entries(
+        url, cfg.cookies_browser, socket_timeout=cfg.probe_timeout_s
+    )
     if not entries:
         console.print("[yellow]no entries[/yellow]")
         return
@@ -385,7 +400,9 @@ def queue_add(
             console.print(f"queued [bold]{job_id}[/bold]")
             return
 
-        kind, entries = _preview_entries(url, cfg.cookies_browser)
+        kind, entries = _preview_entries(
+            url, cfg.cookies_browser, socket_timeout=cfg.probe_timeout_s
+        )
         if kind != "playlist" or not entries:
             raise typer.BadParameter(
                 "--pick requires a playlist URL with at least one entry"

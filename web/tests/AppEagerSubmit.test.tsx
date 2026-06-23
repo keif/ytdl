@@ -567,6 +567,104 @@ describe("App eager submit (Queue button + Enter)", () => {
     globalThis.fetch = originalMock;
   });
 
+  it("failed eager submit does NOT re-arm auto-submit countdown when preview arrives later", async () => {
+    // Codex review: when the user clicks Queue BEFORE /preview returns,
+    // singleEntry is null, so cancelAutoSubmit's lock doesn't fire. If
+    // the POST then fails and we restore the URL, /preview eventually
+    // returns and the autosubmit useEffect would arm a countdown for
+    // the same URL that just failed — auto-retry without the user
+    // asking. submitSingle must mark the URL as attempted unconditionally.
+    const originalMock = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      if (path === "/jobs" && init?.method === "POST") {
+        postedBodies.push(JSON.parse((init.body as string) ?? "{}"));
+        return jsonResponse({ detail: "rejected" }, 400);
+      }
+      if (path === "/jobs" || path.startsWith("/jobs?")) {
+        return jsonResponse({ jobs: [], total: 0 });
+      }
+      if (path === "/status") return statusResponder();
+      if (path === "/preview") {
+        return jsonResponse({
+          kind: "video",
+          title: null,
+          entries: [{ url: "https://yt/x", id: "x", title: "Vid", position: 1 }],
+        });
+      }
+      if (path === "/preview/enrich") {
+        return jsonResponse({
+          entries: [
+            {
+              url: "https://yt/x",
+              title: "Vid",
+              duration_s: 60,
+              uploader: "U",
+              thumbnail_url: null,
+              error: null,
+            },
+          ],
+        });
+      }
+      if (path.startsWith("/jobs/clear/preview")) {
+        return jsonResponse({ clearable: 0, older_than_days: 7 });
+      }
+      return new Response("not found", { status: 404 });
+    }) as unknown as typeof globalThis.fetch;
+
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /^Queue$/ })).toBeInTheDocument();
+    });
+
+    vi.useFakeTimers();
+    try {
+      const input = screen.getByPlaceholderText(/Paste a YouTube URL/i) as HTMLInputElement;
+      fireEvent.change(input, { target: { value: "https://yt/x" } });
+      // Click Queue without advancing past the preview debounce.
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: /^Queue$/ }));
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(postedBodies.length).toBe(1);
+
+      // Wait for URL restoration on failure.
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(input.value).toBe("https://yt/x");
+
+      // Now let /preview resolve for the restored URL. Advance the
+      // preview debounce + enrichment microtasks.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(600);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      // No countdown banner should appear — the URL was marked attempted
+      // by submitSingle, so the autosubmit effect short-circuits.
+      expect(screen.queryByRole("status")).not.toBeInTheDocument();
+
+      // And no auto-submit fires even after the full window.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      expect(postedBodies.length).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    globalThis.fetch = originalMock;
+  });
+
   it("Queue button stays disabled until the URL passes the shape check", async () => {
     render(<App />);
     await waitFor(() => {

@@ -374,6 +374,13 @@ export default function App() {
     // the same URL gets enqueued twice. Idempotent — clearing an
     // already-cleared interval is a no-op.
     cancelAutoSubmit();
+    // Always mark this URL as "manually attempted" so the auto-submit
+    // effect won't fire a countdown for it if the URL ends up restored
+    // (failure path) and /preview later resolves. cancelAutoSubmit()
+    // only sets this when singleEntry exists, but eager submit can fire
+    // BEFORE /preview returns, so without this line a failed manual
+    // Queue would silently retry 5s later when preview finally arrived.
+    autoSubmitAttemptedFor.current = entryUrl;
     setSubmitting(true);
     setSubmitError(null);
 

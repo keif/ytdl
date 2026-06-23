@@ -19,6 +19,7 @@ import {
 import { SubmitForm } from "./components/SubmitForm";
 import { PreviewVideo } from "./components/PreviewVideo";
 import { PreviewPanel } from "./components/PreviewPanel";
+import { AutoSubmitBanner } from "./components/AutoSubmitBanner";
 import { JobList } from "./components/JobList";
 import { useJobsStream } from "./hooks/useJobsStream";
 
@@ -64,6 +65,28 @@ export default function App() {
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [clearable, setClearable] = useState(0);
+  // Paste-and-go countdown. `null` = not counting (cancelled, completed, or
+  // not applicable for the current preview). `{remaining: N}` = N seconds
+  // left before the job auto-submits. The interval handle lives in a ref so
+  // any code path (URL edit, Cancel click, playlist transition, unmount) can
+  // clear it without going through state.
+  const [autoSubmit, setAutoSubmit] = useState<{ remaining: number } | null>(
+    null,
+  );
+  const autoSubmitInterval = useRef<number | null>(null);
+  // Tracks the URL whose auto-submit was already attempted (fired, manually
+  // submitted, or explicitly cancelled) so a re-render of the effect doesn't
+  // restart the countdown for the same preview. Cleared when the URL changes
+  // to something different (the natural "user moved on" signal).
+  const autoSubmitAttemptedFor = useRef<string | null>(null);
+  // The countdown effect captures submitSingle in its closure at scheduling
+  // time. If the user toggles audio-only/subtitles/output-dir during the
+  // window, we want the LATEST submit handler, not a stale one. The ref is
+  // refreshed on every render below so the timer's tick handler dereferences
+  // the freshest function.
+  const submitSingleRef = useRef<(entryUrl: string) => Promise<void>>(
+    async () => {},
+  );
 
   const previewDebounce = useRef<number | null>(null);
   const previewAbort = useRef<AbortController | null>(null);
@@ -145,6 +168,28 @@ export default function App() {
         .then((r) => setClearable(r.clearable))
         .catch(() => setClearable(0)),
     ]);
+  }
+
+  /**
+   * Tear down any in-progress auto-submit countdown.
+   *
+   * Safe to call when no countdown is running — the interval ref guards the
+   * clear. Used from: the Cancel button, URL-edit reset path, playlist
+   * picker mount (defensive — if a single-video countdown happened to be
+   * mid-tick when /preview re-resolved as a playlist), and the App unmount
+   * cleanup.
+   */
+  function cancelAutoSubmit() {
+    if (autoSubmitInterval.current !== null) {
+      window.clearInterval(autoSubmitInterval.current);
+      autoSubmitInterval.current = null;
+    }
+    setAutoSubmit(null);
+    // Mark the current preview URL as "already attempted" so the effect
+    // doesn't restart the countdown when its deps change (e.g. submitting
+    // flips back to false after a failed submit, /status re-resolves).
+    // Cleared when the user moves to a different URL.
+    if (singleEntry) autoSubmitAttemptedFor.current = singleEntry.url;
   }
 
   // ---- Preview fetch on URL change ----
@@ -307,6 +352,12 @@ export default function App() {
   }
 
   async function submitSingle(entryUrl: string) {
+    // Stop any in-flight auto-submit countdown the moment a manual
+    // submit begins. Without this, a Download click near the end of
+    // the window can race the timer tick: both call submitSingle and
+    // the same URL gets enqueued twice. Idempotent — clearing an
+    // already-cleared interval is a no-op.
+    cancelAutoSubmit();
     setSubmitting(true);
     setSubmitError(null);
     try {
@@ -330,6 +381,10 @@ export default function App() {
       setSubmitting(false);
     }
   }
+  // Keep the ref pointed at the latest closure so the auto-submit timer
+  // always uses the user's most-recent audio_only/subtitles/output_dir
+  // selections, even if they were toggled mid-countdown.
+  submitSingleRef.current = submitSingle;
 
   async function submitPickedUrls(urls: string[]) {
     setSubmitting(true);
@@ -365,6 +420,89 @@ export default function App() {
     ready && ready.kind === "playlist" && ready.entries.length > 0
       ? ready.entries
       : null;
+
+  // ---- Auto-submit countdown ----
+  // When a single-video preview resolves and the server-configured delay is
+  // positive, start a 1Hz countdown. On zero, submitSingle() fires through
+  // the same code path the manual Download button uses (audio_only,
+  // subtitles, output_dir all apply). The interval lives in a ref so any
+  // other code path can cancel it. We deliberately use setInterval over
+  // setTimeout-with-Date-arithmetic: the banner reads `remaining` directly
+  // from state, so the tick IS the display update.
+  useEffect(() => {
+    // Defensive: tear down any prior interval before deciding whether to
+    // start a fresh one. Effect re-runs cover URL edits inside the same
+    // mount; the dep array tells React when.
+    if (autoSubmitInterval.current !== null) {
+      window.clearInterval(autoSubmitInterval.current);
+      autoSubmitInterval.current = null;
+    }
+    const delay = status?.autosubmit_delay_s ?? 0;
+    // Don't start a countdown while a submit is in flight. Common shape:
+    // user clicks Download, the manual POST is mid-flight, then /status
+    // arrives and re-fires this effect — without the guard, a new timer
+    // would race the manual submit and enqueue the same URL twice.
+    if (!singleEntry || delay <= 0 || submitting) {
+      if (autoSubmit !== null) setAutoSubmit(null);
+      return;
+    }
+    // Don't re-arm for a URL the user already cancelled OR a URL whose
+    // submit already fired (success or failure). Either case re-enters
+    // this effect when `submitting` flips back to false; without this
+    // guard, a failed submit would loop POSTs every `delay` seconds and
+    // a cancelled banner would come back unbidden.
+    if (autoSubmitAttemptedFor.current === singleEntry.url) {
+      return;
+    }
+    // Capture the URL at countdown-start so a late tick (interleaved with
+    // a URL edit that hadn't yet been observed by the effect) can't
+    // submit a stale value.
+    const entryUrl = singleEntry.url;
+    setAutoSubmit({ remaining: delay });
+    // Track remaining outside React state so the interval callback is
+    // pure relative to the state updater. With the submit side effect
+    // inside a setAutoSubmit() updater, React.StrictMode's double-
+    // invocation in dev would fire the POST twice. Keep the updater
+    // pure (return-only) and drive the side effect from the interval
+    // callback itself.
+    let ticksRemaining = delay;
+    autoSubmitInterval.current = window.setInterval(() => {
+      ticksRemaining -= 1;
+      if (ticksRemaining <= 0) {
+        if (autoSubmitInterval.current !== null) {
+          window.clearInterval(autoSubmitInterval.current);
+          autoSubmitInterval.current = null;
+        }
+        setAutoSubmit(null);
+        // Mark this URL as attempted BEFORE the submit fires. If the
+        // submit fails, the effect re-runs when `submitting` flips back
+        // to false; without this lock it would restart the countdown
+        // and loop POSTs every delay seconds.
+        autoSubmitAttemptedFor.current = entryUrl;
+        // submitSingle() handles its own try/catch and clears the URL
+        // on success; failures surface via submitError. Going through
+        // the ref guarantees we use the freshest closure (with the
+        // user's latest audio_only/subtitles/output_dir values).
+        submitSingleRef.current(entryUrl).catch(() => {});
+        return;
+      }
+      setAutoSubmit({ remaining: ticksRemaining });
+    }, 1000);
+
+    return () => {
+      if (autoSubmitInterval.current !== null) {
+        window.clearInterval(autoSubmitInterval.current);
+        autoSubmitInterval.current = null;
+      }
+    };
+    // We intentionally key off the entry URL (not the entry object) so the
+    // effect only restarts when the user actually moves to a different
+    // video. `status?.autosubmit_delay_s` covers the case where /status
+    // resolves after the preview already did. `submitting` ensures we
+    // tear down (or skip starting) a countdown while a manual submit is
+    // in flight.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [singleEntry?.url, status?.autosubmit_delay_s, submitting]);
 
   return (
     <div className="min-h-screen p-6 max-w-4xl mx-auto flex flex-col gap-6">
@@ -437,9 +575,26 @@ export default function App() {
           const isFreshPaste = url === "" && value !== "";
           const isTypingExtension =
             value.startsWith(url) && value.length === url.length + 1;
+          // Audio-only and output-dir are preserved across typing-shaped
+          // edits (the user is still composing the same URL). They reset
+          // only on non-typing transitions (replace, backspace, multi-
+          // char extension, clear).
           if (!isFreshPaste && !isTypingExtension) {
             setAudioOnly(false);
             setOutputDir("");
+          }
+          // The auto-submit countdown is ALWAYS invalidated by any URL
+          // change. The timer captured the previous URL at scheduling
+          // time; a tick after the input has changed would submit the
+          // stale value. A fresh countdown (if any) will start when the
+          // new preview resolves.
+          if (value !== url) {
+            cancelAutoSubmit();
+            // Moving to a different URL clears the "already-attempted"
+            // lock so the new preview gets a fresh countdown. Note this
+            // must happen AFTER cancelAutoSubmit() — that helper sets
+            // the lock to the previous URL, which we then drop here.
+            autoSubmitAttemptedFor.current = null;
           }
           setUrl(value);
         }}
@@ -462,6 +617,13 @@ export default function App() {
         <p className="text-xs text-red-400">
           Could not preview: {preview.message}
         </p>
+      )}
+
+      {autoSubmit !== null && (
+        <AutoSubmitBanner
+          remaining={autoSubmit.remaining}
+          onCancel={cancelAutoSubmit}
+        />
       )}
 
       {singleEntry && (

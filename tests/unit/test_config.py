@@ -155,6 +155,60 @@ subtitle_langs = ["en", "ja"]
     assert cfg.subtitle_langs == ("en", "ja")
 
 
+def test_autosubmit_delay_defaults_to_five(tmp_data_dir: Path) -> None:
+    """No env, no TOML — the dataclass default (5s) flows through."""
+    cfg = load_config()
+    assert cfg.autosubmit_delay_s == 5
+
+
+def test_autosubmit_delay_env_override(
+    tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Env wins over the default; integer values pass through unchanged."""
+    monkeypatch.setenv("YTDL_AUTOSUBMIT_DELAY_S", "10")
+    cfg = load_config()
+    assert cfg.autosubmit_delay_s == 10
+
+
+def test_autosubmit_delay_zero_disables(
+    tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """0 is a valid disable-the-feature sentinel and must be preserved as-is
+    (not coerced to the default)."""
+    monkeypatch.setenv("YTDL_AUTOSUBMIT_DELAY_S", "0")
+    cfg = load_config()
+    assert cfg.autosubmit_delay_s == 0
+
+
+def test_autosubmit_delay_negative_rejected(
+    tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Negative seconds aren't physically meaningful — fail fast at config
+    load so a typo surfaces at startup rather than silently disabling the UI
+    feature."""
+    monkeypatch.setenv("YTDL_AUTOSUBMIT_DELAY_S", "-3")
+    with pytest.raises(ValueError, match="autosubmit_delay_s"):
+        load_config()
+
+
+def test_autosubmit_delay_malformed_env_raises_clear_message(
+    tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Non-integer env values get a targeted error so the operator knows
+    exactly which knob to fix."""
+    monkeypatch.setenv("YTDL_AUTOSUBMIT_DELAY_S", "abc")
+    with pytest.raises(ValueError, match="YTDL_AUTOSUBMIT_DELAY_S"):
+        load_config()
+
+
+def test_autosubmit_delay_loads_from_toml(tmp_data_dir: Path) -> None:
+    cfg_path = tmp_data_dir / "config" / "ytdl" / "config.toml"
+    cfg_path.parent.mkdir(parents=True)
+    cfg_path.write_text("autosubmit_delay_s = 7\n")
+    cfg = load_config()
+    assert cfg.autosubmit_delay_s == 7
+
+
 def test_load_config_sets_cookies_source_autodetect_or_none(
     tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

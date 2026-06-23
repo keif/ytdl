@@ -206,7 +206,11 @@ export default function App() {
       previewAbort.current = null;
     }
     setSingleEnriched(null);
-    setSubmitError(null);
+    // Don't clear submitError here. The eager-submit failure restore path
+    // brings the URL back AFTER setSubmitError is set; that retriggers
+    // this effect, which would wipe the error and leave the user
+    // confused. submitError gets cleared at submit start (next attempt)
+    // or replaced by a new failure.
 
     const trimmed = url.trim();
     if (!trimmed) {
@@ -379,23 +383,33 @@ export default function App() {
     setPreview({ kind: "idle" });
     setSingleEnriched(null);
 
+    // Only the POST itself drives the restore-on-failure path. A
+    // refreshAll() failure is a UI-listing hiccup, NOT a submit failure —
+    // the job was already accepted by the server. Restoring the URL in
+    // that case would let the user retry from the form and double-enqueue.
+    let postFailed = false;
     try {
       await createJob(entryUrl, effectiveFormat, effectiveSubs, effectiveOutputDir);
-      await refreshAll();
     } catch (e) {
+      postFailed = true;
       setSubmitError(e instanceof Error ? e.message : "submit failed");
       // Best-effort restore: if the user hasn't already pasted a new URL,
       // bring back the failed one so they can correct (bad output_dir,
       // backend hiccup) and retry without retyping. The state updater is
-      // pure — it returns either the failed URL (when the field is empty)
-      // or the user's newer input (when they've moved on). audioOnly /
-      // outputDir aren't restored here because doing so without StrictMode
-      // impurity requires a more involved dance; users can re-toggle them
-      // when they retry. The error message itself surfaces via submitError.
+      // pure — returns either the failed URL (when the field is empty)
+      // or the user's newer input. audioOnly / outputDir aren't restored
+      // here because doing so without StrictMode impurity needs a more
+      // involved dance; users can re-toggle them when they retry.
       setUrl((current) => (current === "" ? entryUrl : current));
-    } finally {
-      setSubmitting(false);
     }
+    if (!postFailed) {
+      try {
+        await refreshAll();
+      } catch {
+        // Ignored — SSE will pick up the new job within a tick or two.
+      }
+    }
+    setSubmitting(false);
   }
   // Keep the ref pointed at the latest closure so the auto-submit timer
   // always uses the user's most-recent audio_only/subtitles/output_dir

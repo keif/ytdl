@@ -435,6 +435,120 @@ describe("App eager submit (Queue button + Enter)", () => {
     globalThis.fetch = originalMock;
   });
 
+  it("does not restore the URL when only refreshAll fails after a successful POST", async () => {
+    // Codex review: separating the POST from refreshAll prevents a
+    // double-enqueue. The POST succeeds → job is on the server. If the
+    // listing refresh then fails (network glitch), we must NOT restore
+    // the URL — that would let the user retry from the form and create
+    // a duplicate.
+    let refreshShouldFail = true;
+    const originalMock = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      if (path === "/jobs" && init?.method === "POST") {
+        postedBodies.push(JSON.parse((init.body as string) ?? "{}"));
+        return jsonResponse({ id: "j-1", status: "pending" });
+      }
+      if (path === "/jobs" || path.startsWith("/jobs?")) {
+        if (refreshShouldFail) {
+          refreshShouldFail = false;
+          return new Response("boom", { status: 500 });
+        }
+        return jsonResponse({ jobs: [], total: 0 });
+      }
+      if (path === "/status") return statusResponder();
+      if (path === "/preview") return jsonResponse({ detail: "shrug" }, 400);
+      if (path === "/preview/enrich") return jsonResponse({ entries: [] });
+      if (path.startsWith("/jobs/clear/preview")) {
+        return jsonResponse({ clearable: 0, older_than_days: 7 });
+      }
+      return new Response("not found", { status: 404 });
+    }) as unknown as typeof globalThis.fetch;
+
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /^Queue$/ })).toBeInTheDocument();
+    });
+
+    const input = screen.getByPlaceholderText(/Paste a YouTube URL/i) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "https://yt/x" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Queue$/ }));
+      // Two ticks to flush both the POST resolution and the refreshAll
+      // rejection.
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // The job WAS queued (POST succeeded). The URL must stay empty so
+    // the user doesn't retry from the form.
+    expect(postedBodies.length).toBe(1);
+    expect(input.value).toBe("");
+
+    globalThis.fetch = originalMock;
+  });
+
+  it("preserves the submit error message after restoring the URL", async () => {
+    // Codex review: the preview useEffect used to unconditionally clear
+    // submitError, which wiped the error the moment we restored the URL.
+    // The error message must persist so the user can see what went wrong.
+    const originalMock = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      if (path === "/jobs" && init?.method === "POST") {
+        postedBodies.push(JSON.parse((init.body as string) ?? "{}"));
+        return jsonResponse({ detail: "output_dir must be a writable directory" }, 400);
+      }
+      if (path === "/jobs" || path.startsWith("/jobs?")) {
+        return jsonResponse({ jobs: [], total: 0 });
+      }
+      if (path === "/status") return statusResponder();
+      if (path === "/preview") return jsonResponse({ detail: "shrug" }, 400);
+      if (path === "/preview/enrich") return jsonResponse({ entries: [] });
+      if (path.startsWith("/jobs/clear/preview")) {
+        return jsonResponse({ clearable: 0, older_than_days: 7 });
+      }
+      return new Response("not found", { status: 404 });
+    }) as unknown as typeof globalThis.fetch;
+
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /^Queue$/ })).toBeInTheDocument();
+    });
+
+    const input = screen.getByPlaceholderText(/Paste a YouTube URL/i) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "https://yt/x" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Queue$/ }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // URL restored AND the error message is still visible (one would be
+    // useless without the other).
+    await waitFor(() => {
+      expect(input.value).toBe("https://yt/x");
+    });
+    // The api.ts layer surfaces detail.detail when it's a plain string,
+    // so the user sees the actual reason their job was rejected.
+    await waitFor(() => {
+      expect(screen.queryByText(/writable directory/i)).toBeInTheDocument();
+    });
+
+    globalThis.fetch = originalMock;
+  });
+
   it("Queue button stays disabled until the URL passes the shape check", async () => {
     render(<App />);
     await waitFor(() => {

@@ -2,6 +2,8 @@
 name = "ytdl"
 version = "0.2.0"
 description = "Self-hosted yt-dlp downloader with CLI and web UI"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.137.2",

@@ -8,6 +8,9 @@ Self-hosted yt-dlp queue with a CLI, a local web UI, and a single Docker contain
 - Retry failed downloads in one click; sweep old DONE rows from the queue when they pile up.
 - Supports yt-dlp's full site catalog (~1,800 sites), not just YouTube.
 
+> **First time?** See [docs/install.md](docs/install.md) for a walkthrough from
+> prereqs to your first download, including cookies setup and troubleshooting.
+
 ## Quick start (local)
 
     uv sync

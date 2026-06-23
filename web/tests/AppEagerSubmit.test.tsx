@@ -316,6 +316,125 @@ describe("App eager submit (Queue button + Enter)", () => {
     globalThis.fetch = originalMock;
   });
 
+  it("restores URL on POST failure when the user hasn't moved on", async () => {
+    // Codex review: invalid output_dir or backend hiccup returns 4xx/5xx.
+    // The user needs the URL back to correct and retry without retyping.
+    const originalMock = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      if (path === "/jobs" && init?.method === "POST") {
+        postedBodies.push(JSON.parse((init.body as string) ?? "{}"));
+        return jsonResponse({ detail: "output_dir must be a writable directory" }, 400);
+      }
+      if (path === "/jobs" || path.startsWith("/jobs?")) {
+        return jsonResponse({ jobs: [], total: 0 });
+      }
+      if (path === "/status") return statusResponder();
+      if (path === "/preview") return jsonResponse({ detail: "shrug" }, 400);
+      if (path === "/preview/enrich") return jsonResponse({ entries: [] });
+      if (path.startsWith("/jobs/clear/preview")) {
+        return jsonResponse({ clearable: 0, older_than_days: 7 });
+      }
+      return new Response("not found", { status: 404 });
+    }) as unknown as typeof globalThis.fetch;
+
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /^Queue$/ })).toBeInTheDocument();
+    });
+
+    const input = screen.getByPlaceholderText(/Paste a YouTube URL/i) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "https://yt/x" } });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Queue$/ }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // After the failure, the URL must come back so the user can correct.
+    await waitFor(() => {
+      expect(input.value).toBe("https://yt/x");
+    });
+
+    globalThis.fetch = originalMock;
+  });
+
+  it("preserves user's newer paste when an earlier submit fails after they moved on", async () => {
+    // If the user has already pasted the next URL while the first POST was
+    // still in flight, restoring the failed URL would clobber their typing.
+    // The restore must be "best effort" — only when the field is still
+    // empty.
+    let resolveFirstPost: ((value: Response) => void) | null = null;
+    const slowFailingPost = new Promise<Response>((r) => {
+      resolveFirstPost = r;
+    });
+    let postCount = 0;
+    const originalMock = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      if (path === "/jobs" && init?.method === "POST") {
+        postCount += 1;
+        postedBodies.push(JSON.parse((init.body as string) ?? "{}"));
+        if (postCount === 1) return slowFailingPost;
+        return jsonResponse({ id: `j-${postCount}`, status: "pending" });
+      }
+      if (path === "/jobs" || path.startsWith("/jobs?")) {
+        return jsonResponse({ jobs: [], total: 0 });
+      }
+      if (path === "/status") return statusResponder();
+      if (path === "/preview") return jsonResponse({ detail: "shrug" }, 400);
+      if (path === "/preview/enrich") return jsonResponse({ entries: [] });
+      if (path.startsWith("/jobs/clear/preview")) {
+        return jsonResponse({ clearable: 0, older_than_days: 7 });
+      }
+      return new Response("not found", { status: 404 });
+    }) as unknown as typeof globalThis.fetch;
+
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /^Queue$/ })).toBeInTheDocument();
+    });
+
+    const input = screen.getByPlaceholderText(/Paste a YouTube URL/i) as HTMLInputElement;
+
+    // First URL: paste + Queue. POST hangs.
+    fireEvent.change(input, { target: { value: "https://yt/first" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Queue$/ }));
+      await Promise.resolve();
+    });
+    expect(input.value).toBe("");
+
+    // User moves on: pastes the next URL while the first POST is still
+    // in flight.
+    fireEvent.change(input, { target: { value: "https://yt/second" } });
+    expect(input.value).toBe("https://yt/second");
+
+    // Now the first POST resolves as a failure.
+    await act(async () => {
+      resolveFirstPost!(jsonResponse({ detail: "boom" }, 500));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // The user's newer paste survives — the restore was a no-op because
+    // the field wasn't empty.
+    expect(input.value).toBe("https://yt/second");
+
+    globalThis.fetch = originalMock;
+  });
+
   it("Queue button stays disabled until the URL passes the shape check", async () => {
     render(<App />);
     await waitFor(() => {

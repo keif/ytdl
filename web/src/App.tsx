@@ -384,6 +384,15 @@ export default function App() {
       await refreshAll();
     } catch (e) {
       setSubmitError(e instanceof Error ? e.message : "submit failed");
+      // Best-effort restore: if the user hasn't already pasted a new URL,
+      // bring back the failed one so they can correct (bad output_dir,
+      // backend hiccup) and retry without retyping. The state updater is
+      // pure — it returns either the failed URL (when the field is empty)
+      // or the user's newer input (when they've moved on). audioOnly /
+      // outputDir aren't restored here because doing so without StrictMode
+      // impurity requires a more involved dance; users can re-toggle them
+      // when they retry. The error message itself surfaces via submitError.
+      setUrl((current) => (current === "" ? entryUrl : current));
     } finally {
       setSubmitting(false);
     }

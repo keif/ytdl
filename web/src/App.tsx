@@ -403,6 +403,19 @@ export default function App() {
     // is still in flight. The preview useEffect sees url="" and resets
     // preview to idle (aborting any pending /preview), which is exactly
     // what we want for the rapid-queue flow.
+    // Cancel any pending preview work BEFORE clearing state. Relying on
+    // the [url] useEffect cleanup to do this is too late — its cleanup
+    // runs only when the next effect mounts, by which point a
+    // mid-flight setTimeout or fetch resolution could have already
+    // rendered a "ready" preview card for the URL we just queued.
+    if (previewDebounce.current !== null) {
+      window.clearTimeout(previewDebounce.current);
+      previewDebounce.current = null;
+    }
+    if (previewAbort.current) {
+      previewAbort.current.abort();
+      previewAbort.current = null;
+    }
     setUrl("");
     // Sync urlRef inline so the catch path's read is accurate even when
     // /jobs rejects synchronously (fast 4xx, immediately rejected mock).

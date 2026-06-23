@@ -1,0 +1,264 @@
+import { render, screen, act, fireEvent, waitFor } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import App from "../src/App";
+
+/**
+ * Eager submit: the Queue button (and Enter inside the URL input) commits a
+ * job the moment the URL passes the http(s) shape check — no waiting on
+ * /preview. The preview keeps fetching in parallel as informational context.
+ *
+ * Regression coverage:
+ *   - /preview is deliberately slow (5s) so any test that asserts a POST
+ *     before the preview resolves proves we don't block on it.
+ *   - The auto-submit countdown's cancel-on-manual-submit (PR #44) is
+ *     re-verified through the new Queue path so we can't accidentally
+ *     double-fire when the user clicks Queue while the banner is ticking.
+ */
+describe("App eager submit (Queue button + Enter)", () => {
+  let originalFetch: typeof globalThis.fetch;
+  let postedBodies: Array<Record<string, unknown>>;
+  let postTimestamps: number[];
+  let previewResolveDelayMs: number;
+  let statusResponder: () => Response;
+
+  function jsonResponse(body: unknown, status = 200): Response {
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  function installFetchMock() {
+    postedBodies = [];
+    postTimestamps = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      if (path === "/jobs" && init?.method === "POST") {
+        postedBodies.push(JSON.parse((init.body as string) ?? "{}"));
+        postTimestamps.push(Date.now());
+        return jsonResponse({ id: `j-${postedBodies.length}`, status: "pending" });
+      }
+      if (path === "/jobs" || path.startsWith("/jobs?")) {
+        return jsonResponse({ jobs: [], total: 0 });
+      }
+      if (path.startsWith("/jobs/clear/preview")) {
+        return jsonResponse({ clearable: 0, older_than_days: 7 });
+      }
+      if (path === "/status") {
+        return statusResponder();
+      }
+      if (path === "/preview") {
+        // Deliberately slow so any test that submits "before preview" is
+        // proving the new fast path, not just a faster network mock.
+        if (previewResolveDelayMs > 0) {
+          await new Promise((r) => setTimeout(r, previewResolveDelayMs));
+        }
+        return jsonResponse({
+          kind: "video",
+          title: null,
+          entries: [
+            { url: "https://yt/x", id: "x", title: "Single Vid", position: 1 },
+          ],
+        });
+      }
+      if (path === "/preview/enrich") {
+        return jsonResponse({
+          entries: [
+            {
+              url: "https://yt/x",
+              title: "Single Vid",
+              duration_s: 60,
+              uploader: "U",
+              thumbnail_url: null,
+              error: null,
+            },
+          ],
+        });
+      }
+      return new Response("not found", { status: 404 });
+    });
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+  }
+
+  beforeEach(() => {
+    (globalThis as unknown as { EventSource: unknown }).EventSource = class {
+      onmessage?: (e: MessageEvent) => void;
+      onopen?: () => void;
+      onerror?: () => void;
+      constructor(_url: string) {}
+      close() {}
+    };
+    originalFetch = globalThis.fetch;
+    previewResolveDelayMs = 5000;
+    statusResponder = () =>
+      jsonResponse({
+        cookies_browser: null,
+        cookies_source: "none",
+        deno: { present: true, path: null },
+        ffmpeg: { present: true, path: null },
+        subtitles_default: false,
+        output_dir: "/tmp/out",
+        autosubmit_delay_s: 5,
+        probe_timeout_s: 30,
+      });
+    installFetchMock();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.useRealTimers();
+  });
+
+  it("Queue button submits before /preview resolves", async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText(/Paste a YouTube URL/i)).toBeInTheDocument();
+    });
+
+    vi.useFakeTimers();
+    const input = screen.getByPlaceholderText(/Paste a YouTube URL/i);
+    fireEvent.change(input, { target: { value: "https://yt/x" } });
+
+    // Queue is enabled immediately — no /preview wait.
+    const queueBtn = screen.getByRole("button", { name: /^Queue$/ });
+    expect((queueBtn as HTMLButtonElement).disabled).toBe(false);
+
+    // Click well within the preview's 5s delay window so we prove the
+    // submit isn't gated on it. Don't advance timers past the debounce —
+    // the preview request hasn't even been kicked off yet.
+    await act(async () => {
+      fireEvent.click(queueBtn);
+      await Promise.resolve();
+    });
+
+    expect(postedBodies.length).toBe(1);
+    expect(postedBodies[0]).toMatchObject({ url: "https://yt/x" });
+
+    // No timers advanced past the preview-resolve threshold — the POST
+    // happened on the synchronous click path, not after a 5s wait.
+  });
+
+  it("Enter key submits before /preview resolves", async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText(/Paste a YouTube URL/i)).toBeInTheDocument();
+    });
+
+    vi.useFakeTimers();
+    const input = screen.getByPlaceholderText(/Paste a YouTube URL/i);
+    fireEvent.change(input, { target: { value: "https://yt/x" } });
+
+    // Pressing Enter in a form's input bubbles a submit event to the
+    // form. fireEvent.submit on the form simulates exactly that.
+    await act(async () => {
+      fireEvent.submit(input.closest("form")!);
+      await Promise.resolve();
+    });
+
+    expect(postedBodies.length).toBe(1);
+    expect(postedBodies[0]).toMatchObject({ url: "https://yt/x" });
+  });
+
+  it("Queue passes audio_only and output_dir overrides through to /jobs", async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText(/Paste a YouTube URL/i)).toBeInTheDocument();
+    });
+
+    vi.useFakeTimers();
+    const input = screen.getByPlaceholderText(/Paste a YouTube URL/i);
+    fireEvent.change(input, { target: { value: "https://yt/x" } });
+
+    // Toggle audio-only after pasting (typing-shape "fresh paste" should
+    // preserve it across the immediate Queue click).
+    const audioOnly = screen.getByRole("checkbox", { name: /audio only/i });
+    await act(async () => {
+      fireEvent.click(audioOnly);
+    });
+
+    const queueBtn = screen.getByRole("button", { name: /^Queue$/ });
+    await act(async () => {
+      fireEvent.click(queueBtn);
+      await Promise.resolve();
+    });
+
+    expect(postedBodies.length).toBe(1);
+    expect(postedBodies[0]).toMatchObject({
+      url: "https://yt/x",
+      format_pref: "audio_only",
+    });
+  });
+
+  it("Queue click while auto-submit countdown is active doesn't double-fire", async () => {
+    // For this test we want the preview to resolve fast so the countdown
+    // actually starts — eager-submit's job is to skip the wait, but the
+    // regression we're guarding against is a Queue click DURING the
+    // countdown firing twice.
+    previewResolveDelayMs = 0;
+
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText(/Paste a YouTube URL/i)).toBeInTheDocument();
+    });
+
+    vi.useFakeTimers();
+    const input = screen.getByPlaceholderText(/Paste a YouTube URL/i);
+    fireEvent.change(input, { target: { value: "https://yt/x" } });
+
+    // Run the debounce + enrich microtasks so the preview resolves and the
+    // countdown banner mounts.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(600);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    // Banner is up at 5s.
+    expect(screen.getByRole("status")).toHaveTextContent(/Downloading in\s*5s/);
+
+    // Click Queue while the banner is ticking. submitSingle() calls
+    // cancelAutoSubmit() at the top, so the timer should not fire a
+    // second POST.
+    const queueBtn = screen.getByRole("button", { name: /^Queue$/ });
+    await act(async () => {
+      fireEvent.click(queueBtn);
+      await Promise.resolve();
+    });
+
+    expect(postedBodies.length).toBe(1);
+
+    // Advance well past where the countdown would have fired — exactly
+    // one POST, banner gone.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    expect(postedBodies.length).toBe(1);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("Queue button stays disabled until the URL passes the shape check", async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText(/Paste a YouTube URL/i)).toBeInTheDocument();
+    });
+
+    const queueBtn = screen.getByRole("button", { name: /^Queue$/ }) as HTMLButtonElement;
+    // Empty input.
+    expect(queueBtn.disabled).toBe(true);
+
+    const input = screen.getByPlaceholderText(/Paste a YouTube URL/i);
+    // Partial URL still failing the shape check.
+    fireEvent.change(input, { target: { value: "htt" } });
+    expect(queueBtn.disabled).toBe(true);
+
+    // Full https URL — Queue lights up immediately.
+    fireEvent.change(input, { target: { value: "https://yt/x" } });
+    expect(queueBtn.disabled).toBe(false);
+  });
+});

@@ -607,6 +607,16 @@ export default function App() {
         outputDir={outputDir}
         onOutputDirChange={setOutputDir}
         outputDirPlaceholder={status?.output_dir ?? ""}
+        submitting={submitting}
+        onQueue={() => {
+          // Eager submit: fire the same code path as the preview card's
+          // Download button, but without waiting on /preview. submitSingle
+          // already calls cancelAutoSubmit() at the top, so a click during
+          // an active countdown can't double-fire.
+          const trimmed = url.trim();
+          if (!trimmed) return;
+          submitSingle(trimmed).catch(() => {});
+        }}
       />
 
       {preview.kind === "loading" && (

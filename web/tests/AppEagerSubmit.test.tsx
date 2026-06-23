@@ -316,7 +316,7 @@ describe("App eager submit (Queue button + Enter)", () => {
     globalThis.fetch = originalMock;
   });
 
-  it("restores URL on POST failure when the user hasn't moved on", async () => {
+  it("restores URL + audio_only + output_dir on POST failure when user hasn't moved on", async () => {
     // Codex review: invalid output_dir or backend hiccup returns 4xx/5xx.
     // The user needs the URL back to correct and retry without retyping.
     const originalMock = globalThis.fetch;
@@ -351,16 +351,34 @@ describe("App eager submit (Queue button + Enter)", () => {
     const input = screen.getByPlaceholderText(/Paste a YouTube URL/i) as HTMLInputElement;
     fireEvent.change(input, { target: { value: "https://yt/x" } });
 
+    // Set up the failure scenario: pick audio-only, set a (presumably-bad)
+    // output_dir override, then submit. The user wants those values back
+    // when the server rejects them.
+    const audioOnlyCheckbox = screen.getByRole("checkbox", { name: /audio only/i }) as HTMLInputElement;
+    await act(async () => {
+      audioOnlyCheckbox.click();
+    });
+    expect(audioOnlyCheckbox.checked).toBe(true);
+
+    // Open the Advanced disclosure to expose the output_dir input, then
+    // fill it.
+    const advanced = screen.getByText(/Advanced/i);
+    fireEvent.click(advanced);
+    const saveToInput = await screen.findByLabelText(/Save to/i);
+    fireEvent.change(saveToInput, { target: { value: "/nonexistent/path" } });
+
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: /^Queue$/ }));
       await Promise.resolve();
       await Promise.resolve();
     });
 
-    // After the failure, the URL must come back so the user can correct.
+    // After the failure: URL back, audio-only back, output_dir back.
     await waitFor(() => {
       expect(input.value).toBe("https://yt/x");
     });
+    expect(audioOnlyCheckbox.checked).toBe(true);
+    expect((screen.getByLabelText(/Save to/i) as HTMLInputElement).value).toBe("/nonexistent/path");
 
     globalThis.fetch = originalMock;
   });

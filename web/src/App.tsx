@@ -79,6 +79,11 @@ export default function App() {
   // restart the countdown for the same preview. Cleared when the URL changes
   // to something different (the natural "user moved on" signal).
   const autoSubmitAttemptedFor = useRef<string | null>(null);
+  // Mirror the latest url state so submitSingle's catch can check the
+  // CURRENT value (post-clear, post-user-typing) without going through
+  // a state updater. Updated via useEffect below so reads from inside
+  // event handlers see the freshest value at catch time.
+  const urlRef = useRef("");
   // The countdown effect captures submitSingle in its closure at scheduling
   // time. If the user toggles audio-only/subtitles/output-dir during the
   // window, we want the LATEST submit handler, not a stale one. The ref is
@@ -277,6 +282,13 @@ export default function App() {
     };
   }, [url]);
 
+  // Keep urlRef in sync with the url state so submitSingle's catch can
+  // check the latest value (post-clear, post-user-typing) without going
+  // through a state updater.
+  useEffect(() => {
+    urlRef.current = url;
+  }, [url]);
+
   // ---- Initial refresh + SSE wiring ----
   useEffect(() => {
     refreshAll().catch(() => {});
@@ -372,6 +384,13 @@ export default function App() {
     const effectiveFormat = audioOnly ? "audio_only" : format;
     const effectiveOutputDir = outputDir.trim() || undefined;
     const effectiveSubs = effectiveSubtitles();
+    // Snapshot per-paste state for the failure-restore path. If the POST
+    // rejects and the user hasn't moved on, we restore ALL of these
+    // (URL, audio-only, output-dir) so the form returns to its pre-
+    // submit shape. Without this, retrying an output_dir-rejected job
+    // would silently use the default directory.
+    const snapshotAudioOnly = audioOnly;
+    const snapshotOutputDir = outputDir;
 
     // Synchronous clear: lets the user paste the next URL while the POST
     // is still in flight. The preview useEffect sees url="" and resets
@@ -393,14 +412,18 @@ export default function App() {
     } catch (e) {
       postFailed = true;
       setSubmitError(e instanceof Error ? e.message : "submit failed");
-      // Best-effort restore: if the user hasn't already pasted a new URL,
-      // bring back the failed one so they can correct (bad output_dir,
-      // backend hiccup) and retry without retyping. The state updater is
-      // pure — returns either the failed URL (when the field is empty)
-      // or the user's newer input. audioOnly / outputDir aren't restored
-      // here because doing so without StrictMode impurity needs a more
-      // involved dance; users can re-toggle them when they retry.
-      setUrl((current) => (current === "" ? entryUrl : current));
+      // Best-effort restore: if the user hasn't already pasted a new URL
+      // since we cleared the input, restore everything (URL + audio_only
+      // + output_dir) so the form returns to its pre-submit shape. Read
+      // urlRef.current (mirror of the latest url state) so this check is
+      // accurate at catch time — the user may have typed during the
+      // in-flight POST. StrictMode-safe: refs are not affected by the
+      // updater double-invocation pattern.
+      if (urlRef.current === "") {
+        setUrl(entryUrl);
+        setAudioOnly(snapshotAudioOnly);
+        setOutputDir(snapshotOutputDir);
+      }
     }
     if (!postFailed) {
       try {

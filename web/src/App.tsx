@@ -360,20 +360,27 @@ export default function App() {
     cancelAutoSubmit();
     setSubmitting(true);
     setSubmitError(null);
+
+    // Capture the values the POST needs BEFORE clearing per-paste state.
+    // We clear the input synchronously (below) so the user can immediately
+    // paste the next URL — the POST runs in the background. createJob
+    // resolves later; we update the queue listing then.
+    const effectiveFormat = audioOnly ? "audio_only" : format;
+    const effectiveOutputDir = outputDir.trim() || undefined;
+    const effectiveSubs = effectiveSubtitles();
+
+    // Synchronous clear: lets the user paste the next URL while the POST
+    // is still in flight. The preview useEffect sees url="" and resets
+    // preview to idle (aborting any pending /preview), which is exactly
+    // what we want for the rapid-queue flow.
+    setUrl("");
+    setAudioOnly(false);
+    setOutputDir("");
+    setPreview({ kind: "idle" });
+    setSingleEnriched(null);
+
     try {
-      const effectiveFormat = audioOnly ? "audio_only" : format;
-      const effectiveOutputDir = outputDir.trim() || undefined;
-      await createJob(
-        entryUrl,
-        effectiveFormat,
-        effectiveSubtitles(),
-        effectiveOutputDir,
-      );
-      setUrl("");
-      setAudioOnly(false);
-      setOutputDir("");
-      setPreview({ kind: "idle" });
-      setSingleEnriched(null);
+      await createJob(entryUrl, effectiveFormat, effectiveSubs, effectiveOutputDir);
       await refreshAll();
     } catch (e) {
       setSubmitError(e instanceof Error ? e.message : "submit failed");

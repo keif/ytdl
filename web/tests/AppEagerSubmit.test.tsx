@@ -242,6 +242,80 @@ describe("App eager submit (Queue button + Enter)", () => {
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
+  it("clears the URL input synchronously on Queue click — POST runs in background", async () => {
+    // The user's rapid-queue UX needs the input cleared the moment they
+    // click Queue, NOT when the POST resolves. Otherwise the input is
+    // held captive by a slow /jobs round-trip and they can't paste the
+    // next URL.
+    let resolvePost: ((value: Response) => void) | null = null;
+    const slowPost = new Promise<Response>((r) => {
+      resolvePost = r;
+    });
+
+    const originalMock = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      if (path === "/jobs" && init?.method === "POST") {
+        postedBodies.push(JSON.parse((init.body as string) ?? "{}"));
+        return slowPost;
+      }
+      if (path === "/jobs" || path.startsWith("/jobs?")) {
+        return jsonResponse({ jobs: [], total: 0 });
+      }
+      if (path === "/status") return statusResponder();
+      if (path === "/preview") {
+        // Don't matter for this test — fail fast so the preview useEffect
+        // doesn't sit holding any state we care about.
+        return jsonResponse({ detail: "not relevant" }, 400);
+      }
+      if (path === "/preview/enrich") return jsonResponse({ entries: [] });
+      if (path.startsWith("/jobs/clear/preview")) {
+        return jsonResponse({ clearable: 0, older_than_days: 7 });
+      }
+      return new Response("not found", { status: 404 });
+    }) as unknown as typeof globalThis.fetch;
+
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /^Queue$/ })).toBeInTheDocument();
+    });
+
+    const input = screen.getByPlaceholderText(/Paste a YouTube URL/i) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "https://yt/x" } });
+    expect(input.value).toBe("https://yt/x");
+
+    const queueBtn = screen.getByRole("button", { name: /^Queue$/ });
+    await act(async () => {
+      fireEvent.click(queueBtn);
+      await Promise.resolve();
+    });
+
+    // CRITICAL: input is clear right now, even though the POST is still pending.
+    expect(input.value).toBe("");
+    expect(postedBodies.length).toBe(1);
+    expect(postedBodies[0]).toMatchObject({ url: "https://yt/x" });
+
+    // The user can paste the next URL immediately, without waiting on the
+    // first POST.
+    fireEvent.change(input, { target: { value: "https://yt/y" } });
+    expect(input.value).toBe("https://yt/y");
+
+    // Resolve the first POST so the second one (when triggered) is observable
+    // as a distinct call. We don't need to assert the second POST here —
+    // this test's contract is "input clears synchronously."
+    await act(async () => {
+      resolvePost!(jsonResponse({ id: "j-1", status: "pending" }));
+      await Promise.resolve();
+    });
+
+    globalThis.fetch = originalMock;
+  });
+
   it("Queue button stays disabled until the URL passes the shape check", async () => {
     render(<App />);
     await waitFor(() => {

@@ -79,6 +79,11 @@ export default function App() {
   // restart the countdown for the same preview. Cleared when the URL changes
   // to something different (the natural "user moved on" signal).
   const autoSubmitAttemptedFor = useRef<string | null>(null);
+  // Mirror the latest url state so submitSingle's catch can check the
+  // CURRENT value (post-clear, post-user-typing) without going through
+  // a state updater. Updated via useEffect below so reads from inside
+  // event handlers see the freshest value at catch time.
+  const urlRef = useRef("");
   // The countdown effect captures submitSingle in its closure at scheduling
   // time. If the user toggles audio-only/subtitles/output-dir during the
   // window, we want the LATEST submit handler, not a stale one. The ref is
@@ -206,7 +211,11 @@ export default function App() {
       previewAbort.current = null;
     }
     setSingleEnriched(null);
-    setSubmitError(null);
+    // Don't clear submitError here. The eager-submit failure restore path
+    // brings the URL back AFTER setSubmitError is set; that retriggers
+    // this effect, which would wipe the error and leave the user
+    // confused. submitError gets cleared at submit start (next attempt)
+    // or replaced by a new failure.
 
     const trimmed = url.trim();
     if (!trimmed) {
@@ -272,6 +281,27 @@ export default function App() {
       }
     };
   }, [url]);
+
+  // Keep urlRef in sync with the url state so submitSingle's catch can
+  // check the latest value (post-clear, post-user-typing) without going
+  // through a state updater. The useEffect is a safety net; everywhere
+  // we explicitly call setUrl we also go through updateUrl below, which
+  // syncs the ref inline. The effect handles state updates we don't
+  // catch (functional updates, etc.).
+  useEffect(() => {
+    urlRef.current = url;
+  }, [url]);
+
+  // Helper: setUrl + synchronous urlRef sync. Use this instead of setUrl
+  // directly so every URL change is observable by submitSingle's catch
+  // without waiting for the [url] effect to commit. This matters when
+  // /jobs rejects synchronously, or when the user types while a POST
+  // is in flight — the catch needs the freshest value to decide whether
+  // to restore the failed URL or leave the user's new paste alone.
+  function updateUrl(next: string) {
+    setUrl(next);
+    urlRef.current = next;
+  }
 
   // ---- Initial refresh + SSE wiring ----
   useEffect(() => {
@@ -358,28 +388,83 @@ export default function App() {
     // the same URL gets enqueued twice. Idempotent — clearing an
     // already-cleared interval is a no-op.
     cancelAutoSubmit();
+    // Always mark this URL as "manually attempted" so the auto-submit
+    // effect won't fire a countdown for it if the URL ends up restored
+    // (failure path) and /preview later resolves. cancelAutoSubmit()
+    // only sets this when singleEntry exists, but eager submit can fire
+    // BEFORE /preview returns, so without this line a failed manual
+    // Queue would silently retry 5s later when preview finally arrived.
+    autoSubmitAttemptedFor.current = entryUrl;
     setSubmitting(true);
     setSubmitError(null);
-    try {
-      const effectiveFormat = audioOnly ? "audio_only" : format;
-      const effectiveOutputDir = outputDir.trim() || undefined;
-      await createJob(
-        entryUrl,
-        effectiveFormat,
-        effectiveSubtitles(),
-        effectiveOutputDir,
-      );
-      setUrl("");
-      setAudioOnly(false);
-      setOutputDir("");
-      setPreview({ kind: "idle" });
-      setSingleEnriched(null);
-      await refreshAll();
-    } catch (e) {
-      setSubmitError(e instanceof Error ? e.message : "submit failed");
-    } finally {
-      setSubmitting(false);
+
+    // Capture the values the POST needs BEFORE clearing per-paste state.
+    // We clear the input synchronously (below) so the user can immediately
+    // paste the next URL — the POST runs in the background. createJob
+    // resolves later; we update the queue listing then.
+    const effectiveFormat = audioOnly ? "audio_only" : format;
+    const effectiveOutputDir = outputDir.trim() || undefined;
+    const effectiveSubs = effectiveSubtitles();
+    // Snapshot per-paste state for the failure-restore path. If the POST
+    // rejects and the user hasn't moved on, we restore ALL of these
+    // (URL, audio-only, output-dir) so the form returns to its pre-
+    // submit shape. Without this, retrying an output_dir-rejected job
+    // would silently use the default directory.
+    const snapshotAudioOnly = audioOnly;
+    const snapshotOutputDir = outputDir;
+
+    // Synchronous clear: lets the user paste the next URL while the POST
+    // is still in flight. The preview useEffect sees url="" and resets
+    // preview to idle (aborting any pending /preview), which is exactly
+    // what we want for the rapid-queue flow.
+    // Cancel any pending preview work BEFORE clearing state. Relying on
+    // the [url] useEffect cleanup to do this is too late — its cleanup
+    // runs only when the next effect mounts, by which point a
+    // mid-flight setTimeout or fetch resolution could have already
+    // rendered a "ready" preview card for the URL we just queued.
+    if (previewDebounce.current !== null) {
+      window.clearTimeout(previewDebounce.current);
+      previewDebounce.current = null;
     }
+    if (previewAbort.current) {
+      previewAbort.current.abort();
+      previewAbort.current = null;
+    }
+    updateUrl("");
+    setAudioOnly(false);
+    setOutputDir("");
+    setPreview({ kind: "idle" });
+    setSingleEnriched(null);
+
+    // Only the POST itself drives the restore-on-failure path. A
+    // refreshAll() failure is a UI-listing hiccup, NOT a submit failure —
+    // the job was already accepted by the server. Restoring the URL in
+    // that case would let the user retry from the form and double-enqueue.
+    let postFailed = false;
+    try {
+      await createJob(entryUrl, effectiveFormat, effectiveSubs, effectiveOutputDir);
+    } catch (e) {
+      postFailed = true;
+      // Only show the error AND restore the form if the user is still
+      // looking at the same URL they submitted (no new paste since clear).
+      // If they've moved on, the failed URL's error is misleading under
+      // their newer input — swallow it silently. They can still inspect
+      // the queue row when SSE catches up.
+      if (urlRef.current === "") {
+        setSubmitError(e instanceof Error ? e.message : "submit failed");
+        updateUrl(entryUrl);
+        setAudioOnly(snapshotAudioOnly);
+        setOutputDir(snapshotOutputDir);
+      }
+    }
+    if (!postFailed) {
+      try {
+        await refreshAll();
+      } catch {
+        // Ignored — SSE will pick up the new job within a tick or two.
+      }
+    }
+    setSubmitting(false);
   }
   // Keep the ref pointed at the latest closure so the auto-submit timer
   // always uses the user's most-recent audio_only/subtitles/output_dir
@@ -398,7 +483,7 @@ export default function App() {
         effectiveSubtitles(),
         effectiveOutputDir,
       );
-      setUrl("");
+      updateUrl("");
       setAudioOnly(false);
       setOutputDir("");
       setPreview({ kind: "idle" });
@@ -451,7 +536,20 @@ export default function App() {
     // this effect when `submitting` flips back to false; without this
     // guard, a failed submit would loop POSTs every `delay` seconds and
     // a cancelled banner would come back unbidden.
-    if (autoSubmitAttemptedFor.current === singleEntry.url) {
+    //
+    // Match against BOTH the resolved preview URL AND the input URL.
+    // yt-dlp's probe canonicalizes some URLs (`youtu.be/X` becomes
+    // `youtube.com/watch?v=X`), so a lock keyed on the raw paste would
+    // miss the canonical form. Comparing against urlRef.current covers
+    // the failure-restore case where the user is still looking at the
+    // input they manually attempted, regardless of canonicalization.
+    // Reading via the ref (not the url state directly) avoids needing
+    // `url` in the deps array — it's updated synchronously by
+    // updateUrl(), so it's always current when this effect runs.
+    if (
+      autoSubmitAttemptedFor.current === singleEntry.url ||
+      autoSubmitAttemptedFor.current === urlRef.current
+    ) {
       return;
     }
     // Capture the URL at countdown-start so a late tick (interleaved with
@@ -583,6 +681,13 @@ export default function App() {
             setAudioOnly(false);
             setOutputDir("");
           }
+          // Clear any stale submit error when the user edits the URL.
+          // A failed submit's message belongs to the failed URL only —
+          // if the user is moving on, the old error is misleading. We
+          // clear it here (in the user-typing path) rather than in the
+          // [url] useEffect so the failure-restore path doesn't wipe
+          // its own error message.
+          if (value !== url) setSubmitError(null);
           // The auto-submit countdown is ALWAYS invalidated by any URL
           // change. The timer captured the previous URL at scheduling
           // time; a tick after the input has changed would submit the
@@ -596,7 +701,7 @@ export default function App() {
             // the lock to the previous URL, which we then drop here.
             autoSubmitAttemptedFor.current = null;
           }
-          setUrl(value);
+          updateUrl(value);
         }}
         format={format}
         onFormatChange={setFormat}
@@ -607,6 +712,16 @@ export default function App() {
         outputDir={outputDir}
         onOutputDirChange={setOutputDir}
         outputDirPlaceholder={status?.output_dir ?? ""}
+        submitting={submitting}
+        onQueue={() => {
+          // Eager submit: fire the same code path as the preview card's
+          // Download button, but without waiting on /preview. submitSingle
+          // already calls cancelAutoSubmit() at the top, so a click during
+          // an active countdown can't double-fire.
+          const trimmed = url.trim();
+          if (!trimmed) return;
+          submitSingle(trimmed).catch(() => {});
+        }}
       />
 
       {preview.kind === "loading" && (
@@ -642,7 +757,13 @@ export default function App() {
           entries={playlistEntries}
           onConfirm={(urls) => submitPickedUrls(urls)}
           onCancel={() => {
-            setUrl("");
+            // The user explicitly dismissed the form. Stale errors from
+            // a previous failed submit (single or picker) shouldn't linger
+            // under an empty form. Same intent as the user-typing path's
+            // setSubmitError(null) clear — the [url] effect no longer
+            // handles this so we do it explicitly here.
+            setSubmitError(null);
+            updateUrl("");
             setAudioOnly(false);
             setOutputDir("");
             setPreview({ kind: "idle" });

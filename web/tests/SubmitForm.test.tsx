@@ -17,6 +17,8 @@ const baseProps = {
   outputDir: "",
   onOutputDirChange: () => {},
   outputDirPlaceholder: "",
+  onQueue: () => {},
+  submitting: false,
 };
 
 describe("SubmitForm subtitles checkbox", () => {
@@ -119,5 +121,98 @@ describe("SubmitForm advanced output_dir override", () => {
     render(<SubmitForm {...baseProps} outputDir="~/Music" />);
     const input = screen.getByLabelText(/Save to/i) as HTMLInputElement;
     expect(input.value).toBe("~/Music");
+  });
+});
+
+describe("SubmitForm Queue button + Enter submit", () => {
+  it("renders the Queue button", () => {
+    render(<SubmitForm {...baseProps} />);
+    expect(screen.getByRole("button", { name: /^Queue$/ })).toBeInTheDocument();
+  });
+
+  it("disables Queue when the URL is empty", () => {
+    render(<SubmitForm {...baseProps} url="" />);
+    const btn = screen.getByRole("button", { name: /^Queue$/ }) as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+  });
+
+  it("disables Queue when the URL is whitespace-only", () => {
+    render(<SubmitForm {...baseProps} url="   " />);
+    const btn = screen.getByRole("button", { name: /^Queue$/ }) as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+  });
+
+  it("disables Queue when the URL doesn't start with http(s)://", () => {
+    render(<SubmitForm {...baseProps} url="ftp://example.com/a" />);
+    const btn = screen.getByRole("button", { name: /^Queue$/ }) as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+  });
+
+  it("enables Queue for a well-shaped https URL", () => {
+    render(<SubmitForm {...baseProps} url="https://yt/x" />);
+    const btn = screen.getByRole("button", { name: /^Queue$/ }) as HTMLButtonElement;
+    expect(btn.disabled).toBe(false);
+  });
+
+  it("enables Queue for a well-shaped http URL", () => {
+    render(<SubmitForm {...baseProps} url="http://yt/x" />);
+    const btn = screen.getByRole("button", { name: /^Queue$/ }) as HTMLButtonElement;
+    expect(btn.disabled).toBe(false);
+  });
+
+  it("disables Queue while submitting, even with a valid URL", () => {
+    render(<SubmitForm {...baseProps} url="https://yt/x" submitting={true} />);
+    const btn = screen.getByRole("button", { name: /…|Queue/ }) as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+  });
+
+  it("renders the ellipsis label while submitting", () => {
+    render(<SubmitForm {...baseProps} url="https://yt/x" submitting={true} />);
+    // The button's accessible name is the ellipsis while a submit is in flight.
+    expect(screen.queryByRole("button", { name: /^Queue$/ })).toBeNull();
+    expect(screen.getByRole("button", { name: /…/ })).toBeInTheDocument();
+  });
+
+  it("fires onQueue when the Queue button is clicked", () => {
+    const onQueue = vi.fn();
+    render(<SubmitForm {...baseProps} url="https://yt/x" onQueue={onQueue} />);
+    fireEvent.click(screen.getByRole("button", { name: /^Queue$/ }));
+    expect(onQueue).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT fire onQueue when the button is clicked while disabled", () => {
+    const onQueue = vi.fn();
+    render(<SubmitForm {...baseProps} url="" onQueue={onQueue} />);
+    // Disabled <button> click is a no-op at the DOM level; assert defensively.
+    fireEvent.click(screen.getByRole("button", { name: /^Queue$/ }));
+    expect(onQueue).not.toHaveBeenCalled();
+  });
+
+  it("fires onQueue when Enter is pressed in the URL input (form submit)", () => {
+    const onQueue = vi.fn();
+    render(<SubmitForm {...baseProps} url="https://yt/x" onQueue={onQueue} />);
+    const input = screen.getByPlaceholderText(/Paste a YouTube URL/i);
+    // Hitting Enter in a form's only input triggers its submit. fireEvent
+    // delivers the same event the browser would, including the submit
+    // bubbling to the form.
+    fireEvent.submit(input.closest("form")!);
+    expect(onQueue).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT fire onQueue on keystrokes other than Enter", () => {
+    const onQueue = vi.fn();
+    render(<SubmitForm {...baseProps} url="https://yt/x" onQueue={onQueue} />);
+    const input = screen.getByPlaceholderText(/Paste a YouTube URL/i);
+    fireEvent.change(input, { target: { value: "https://yt/xy" } });
+    fireEvent.keyDown(input, { key: "a" });
+    expect(onQueue).not.toHaveBeenCalled();
+  });
+
+  it("does NOT fire onQueue on Enter when the URL is invalid", () => {
+    const onQueue = vi.fn();
+    render(<SubmitForm {...baseProps} url="not-a-url" onQueue={onQueue} />);
+    const input = screen.getByPlaceholderText(/Paste a YouTube URL/i);
+    fireEvent.submit(input.closest("form")!);
+    expect(onQueue).not.toHaveBeenCalled();
   });
 });

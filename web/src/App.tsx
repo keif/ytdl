@@ -759,6 +759,12 @@ export default function App() {
           entries={playlistEntries}
           onConfirm={(urls) => submitPickedUrls(urls)}
           onCancel={() => {
+            // The user explicitly dismissed the form. Stale errors from
+            // a previous failed submit (single or picker) shouldn't linger
+            // under an empty form. Same intent as the user-typing path's
+            // setSubmitError(null) clear — the [url] effect no longer
+            // handles this so we do it explicitly here.
+            setSubmitError(null);
             updateUrl("");
             setAudioOnly(false);
             setOutputDir("");

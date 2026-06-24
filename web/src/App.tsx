@@ -445,15 +445,13 @@ export default function App() {
       await createJob(entryUrl, effectiveFormat, effectiveSubs, effectiveOutputDir);
     } catch (e) {
       postFailed = true;
-      setSubmitError(e instanceof Error ? e.message : "submit failed");
-      // Best-effort restore: if the user hasn't already pasted a new URL
-      // since we cleared the input, restore everything (URL + audio_only
-      // + output_dir) so the form returns to its pre-submit shape. Read
-      // urlRef.current (mirror of the latest url state) so this check is
-      // accurate at catch time — the user may have typed during the
-      // in-flight POST. StrictMode-safe: refs are not affected by the
-      // updater double-invocation pattern.
+      // Only show the error AND restore the form if the user is still
+      // looking at the same URL they submitted (no new paste since clear).
+      // If they've moved on, the failed URL's error is misleading under
+      // their newer input — swallow it silently. They can still inspect
+      // the queue row when SSE catches up.
       if (urlRef.current === "") {
+        setSubmitError(e instanceof Error ? e.message : "submit failed");
         updateUrl(entryUrl);
         setAudioOnly(snapshotAudioOnly);
         setOutputDir(snapshotOutputDir);

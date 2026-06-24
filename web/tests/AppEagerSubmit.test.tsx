@@ -895,6 +895,64 @@ describe("App eager submit (Queue button + Enter)", () => {
     globalThis.fetch = originalMock;
   });
 
+  it("clears stale submitError when user types a different URL after a failure", async () => {
+    // Codex P2: removing the [url] useEffect's setSubmitError(null) clear
+    // (so failure-restore doesn't wipe its own error) meant errors
+    // persisted across unrelated user edits. Clear the error in the
+    // user-typing path specifically.
+    const originalMock = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      if (path === "/jobs" && init?.method === "POST") {
+        postedBodies.push(JSON.parse((init.body as string) ?? "{}"));
+        return jsonResponse({ detail: "output_dir must be a writable directory" }, 400);
+      }
+      if (path === "/jobs" || path.startsWith("/jobs?")) {
+        return jsonResponse({ jobs: [], total: 0 });
+      }
+      if (path === "/status") return statusResponder();
+      if (path === "/preview") return jsonResponse({ detail: "shrug" }, 400);
+      if (path === "/preview/enrich") return jsonResponse({ entries: [] });
+      if (path.startsWith("/jobs/clear/preview")) {
+        return jsonResponse({ clearable: 0, older_than_days: 7 });
+      }
+      return new Response("not found", { status: 404 });
+    }) as unknown as typeof globalThis.fetch;
+
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /^Queue$/ })).toBeInTheDocument();
+    });
+
+    const input = screen.getByPlaceholderText(/Paste a YouTube URL/i) as HTMLInputElement;
+
+    // Paste + Queue → fails → URL restored, error displayed.
+    fireEvent.change(input, { target: { value: "https://yt/x" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Queue$/ }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // Error should be visible.
+    await waitFor(() => {
+      expect(screen.queryByText(/writable directory/i)).toBeInTheDocument();
+    });
+
+    // User pastes a DIFFERENT URL (paste-replace).
+    fireEvent.change(input, { target: { value: "https://yt/different" } });
+
+    // Stale error gone — it belonged to the previous URL.
+    expect(screen.queryByText(/writable directory/i)).not.toBeInTheDocument();
+
+    globalThis.fetch = originalMock;
+  });
+
   it("Queue button stays disabled until the URL passes the shape check", async () => {
     render(<App />);
     await waitFor(() => {

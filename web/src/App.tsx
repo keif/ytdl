@@ -683,6 +683,13 @@ export default function App() {
             setAudioOnly(false);
             setOutputDir("");
           }
+          // Clear any stale submit error when the user edits the URL.
+          // A failed submit's message belongs to the failed URL only —
+          // if the user is moving on, the old error is misleading. We
+          // clear it here (in the user-typing path) rather than in the
+          // [url] useEffect so the failure-restore path doesn't wipe
+          // its own error message.
+          if (value !== url) setSubmitError(null);
           // The auto-submit countdown is ALWAYS invalidated by any URL
           // change. The timer captured the previous URL at scheduling
           // time; a tick after the input has changed would submit the

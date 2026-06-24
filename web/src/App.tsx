@@ -284,10 +284,24 @@ export default function App() {
 
   // Keep urlRef in sync with the url state so submitSingle's catch can
   // check the latest value (post-clear, post-user-typing) without going
-  // through a state updater.
+  // through a state updater. The useEffect is a safety net; everywhere
+  // we explicitly call setUrl we also go through updateUrl below, which
+  // syncs the ref inline. The effect handles state updates we don't
+  // catch (functional updates, etc.).
   useEffect(() => {
     urlRef.current = url;
   }, [url]);
+
+  // Helper: setUrl + synchronous urlRef sync. Use this instead of setUrl
+  // directly so every URL change is observable by submitSingle's catch
+  // without waiting for the [url] effect to commit. This matters when
+  // /jobs rejects synchronously, or when the user types while a POST
+  // is in flight — the catch needs the freshest value to decide whether
+  // to restore the failed URL or leave the user's new paste alone.
+  function updateUrl(next: string) {
+    setUrl(next);
+    urlRef.current = next;
+  }
 
   // ---- Initial refresh + SSE wiring ----
   useEffect(() => {
@@ -416,12 +430,7 @@ export default function App() {
       previewAbort.current.abort();
       previewAbort.current = null;
     }
-    setUrl("");
-    // Sync urlRef inline so the catch path's read is accurate even when
-    // /jobs rejects synchronously (fast 4xx, immediately rejected mock).
-    // The [url] useEffect runs AFTER render, so without this we could
-    // skip the failure-restore entirely.
-    urlRef.current = "";
+    updateUrl("");
     setAudioOnly(false);
     setOutputDir("");
     setPreview({ kind: "idle" });
@@ -445,8 +454,7 @@ export default function App() {
       // in-flight POST. StrictMode-safe: refs are not affected by the
       // updater double-invocation pattern.
       if (urlRef.current === "") {
-        setUrl(entryUrl);
-        urlRef.current = entryUrl;
+        updateUrl(entryUrl);
         setAudioOnly(snapshotAudioOnly);
         setOutputDir(snapshotOutputDir);
       }
@@ -477,7 +485,7 @@ export default function App() {
         effectiveSubtitles(),
         effectiveOutputDir,
       );
-      setUrl("");
+      updateUrl("");
       setAudioOnly(false);
       setOutputDir("");
       setPreview({ kind: "idle" });
@@ -675,7 +683,7 @@ export default function App() {
             // the lock to the previous URL, which we then drop here.
             autoSubmitAttemptedFor.current = null;
           }
-          setUrl(value);
+          updateUrl(value);
         }}
         format={format}
         onFormatChange={setFormat}
@@ -731,7 +739,7 @@ export default function App() {
           entries={playlistEntries}
           onConfirm={(urls) => submitPickedUrls(urls)}
           onCancel={() => {
-            setUrl("");
+            updateUrl("");
             setAudioOnly(false);
             setOutputDir("");
             setPreview({ kind: "idle" });

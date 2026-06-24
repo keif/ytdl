@@ -719,6 +719,79 @@ describe("App eager submit (Queue button + Enter)", () => {
     globalThis.fetch = originalMock;
   });
 
+  it("synchronously-rejecting POST after user typed during flight preserves their newer paste", async () => {
+    // Codex's final P2: the mirror of the previous race. User pastes A,
+    // clicks Queue, then pastes B while the POST is in flight. If the
+    // POST rejects synchronously, the catch reads urlRef before the
+    // [url] effect for B has fired, sees the "" we wrote at clear time,
+    // and restores A — clobbering B. updateUrl() helper writes urlRef
+    // inline at every setUrl site so the catch always reads the freshest
+    // value, including writes from the user-typing path.
+    let resolveFirstPost: ((value: Response) => void) | null = null;
+    const firstPost = new Promise<Response>((r) => {
+      resolveFirstPost = r;
+    });
+    let postCount = 0;
+
+    const originalMock = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      if (path === "/jobs" && init?.method === "POST") {
+        postCount += 1;
+        postedBodies.push(JSON.parse((init.body as string) ?? "{}"));
+        if (postCount === 1) return firstPost;
+        return jsonResponse({ id: `j-${postCount}`, status: "pending" });
+      }
+      if (path === "/jobs" || path.startsWith("/jobs?")) {
+        return jsonResponse({ jobs: [], total: 0 });
+      }
+      if (path === "/status") return statusResponder();
+      if (path === "/preview") return jsonResponse({ detail: "n/a" }, 400);
+      if (path === "/preview/enrich") return jsonResponse({ entries: [] });
+      if (path.startsWith("/jobs/clear/preview")) {
+        return jsonResponse({ clearable: 0, older_than_days: 7 });
+      }
+      return new Response("not found", { status: 404 });
+    }) as unknown as typeof globalThis.fetch;
+
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /^Queue$/ })).toBeInTheDocument();
+    });
+
+    const input = screen.getByPlaceholderText(/Paste a YouTube URL/i) as HTMLInputElement;
+
+    // First URL → Queue (POST hangs).
+    fireEvent.change(input, { target: { value: "https://yt/first" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Queue$/ }));
+      await Promise.resolve();
+    });
+    expect(input.value).toBe("");
+
+    // User immediately pastes a different URL.
+    fireEvent.change(input, { target: { value: "https://yt/second" } });
+    expect(input.value).toBe("https://yt/second");
+
+    // Now the first POST rejects. The catch must NOT restore "first"
+    // because urlRef.current is "second" (synced by updateUrl at the
+    // user-typing site).
+    await act(async () => {
+      resolveFirstPost!(jsonResponse({ detail: "boom" }, 500));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(input.value).toBe("https://yt/second");
+
+    globalThis.fetch = originalMock;
+  });
+
   it("Queue button stays disabled until the URL passes the shape check", async () => {
     render(<App />);
     await waitFor(() => {

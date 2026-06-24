@@ -425,3 +425,65 @@ def test_download_aborts_when_cancel_flag_set(tmp_path: Path) -> None:
     )
     with pytest.raises(DownloadCancelled):
         download(job, ctx)
+
+
+# ---- radio-mix detection ----
+
+
+def test_is_radio_mix_pure_video_url() -> None:
+    from ytdl.downloader import _is_radio_mix
+
+    assert _is_radio_mix("https://www.youtube.com/watch?v=abc") is False
+
+
+def test_is_radio_mix_pure_playlist_url() -> None:
+    from ytdl.downloader import _is_radio_mix
+
+    # Pure playlist URL — no `v=`, list ID is a PL.
+    assert _is_radio_mix("https://www.youtube.com/playlist?list=PLxyz") is False
+
+
+def test_is_radio_mix_hybrid_real_playlist() -> None:
+    from ytdl.downloader import _is_radio_mix
+
+    # The bug report case: user pastes a video URL while watching inside
+    # a real playlist. Address bar has both `v=` and a PL-prefixed list.
+    # This must NOT be classified as a radio mix.
+    assert (
+        _is_radio_mix("https://www.youtube.com/watch?v=abc&list=PLxyz123") is False
+    )
+
+
+def test_is_radio_mix_hybrid_radio_url() -> None:
+    from ytdl.downloader import _is_radio_mix
+
+    # YouTube auto-redirects some `?v=X` URLs to `?v=X&list=RDX` for
+    # synthetic 25-track mixes. Treat these as single videos.
+    assert (
+        _is_radio_mix("https://www.youtube.com/watch?v=abc&list=RDabc") is True
+    )
+
+
+def test_is_radio_mix_mix_radio_variants() -> None:
+    from ytdl.downloader import _is_radio_mix
+
+    # All RD-prefixed lists are auto-generated radio/mix variants.
+    assert _is_radio_mix("https://www.youtube.com/watch?v=x&list=RDMM123") is True
+    assert _is_radio_mix("https://www.youtube.com/watch?v=x&list=RDCLAK1") is True
+
+
+def test_is_radio_mix_other_curated_lists() -> None:
+    from ytdl.downloader import _is_radio_mix
+
+    # Liked, Watch Later, Library Mix — user-curated, not radio.
+    assert _is_radio_mix("https://www.youtube.com/playlist?list=LL") is False
+    assert _is_radio_mix("https://www.youtube.com/playlist?list=WL") is False
+    assert _is_radio_mix("https://www.youtube.com/playlist?list=LM") is False
+
+
+def test_is_radio_mix_malformed_url() -> None:
+    from ytdl.downloader import _is_radio_mix
+
+    # Garbage input shouldn't raise — return False (defer to yt-dlp).
+    assert _is_radio_mix("not a url at all") is False
+    assert _is_radio_mix("") is False

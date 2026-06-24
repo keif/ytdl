@@ -14,6 +14,27 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
+from urllib.parse import parse_qs, urlparse
+
+
+def _is_radio_mix(url: str) -> bool:
+    """Detect YouTube radio-mix URLs (?v=X&list=RD...) that should be
+    downloaded as a single video, not expanded as a playlist.
+
+    YouTube list IDs encode kind by prefix:
+      - RD, RDMM, RDCLAK, ... -> auto-generated radio / mix
+      - PL, OL, UU, LL, WL, LM, FL, ... -> user-curated / channel lists
+
+    For radio mixes, the user almost certainly wanted just the video they
+    pasted — auto-redirects to `?v=X&list=RDX` are aggressive. For real
+    playlists, the user wanted the playlist; their intent is to expand.
+    """
+    try:
+        qs = parse_qs(urlparse(url).query)
+    except Exception:
+        return False
+    list_ids = qs.get("list", [])
+    return bool(list_ids) and list_ids[0].startswith("RD")
 
 
 class Classification(StrEnum):
@@ -233,10 +254,14 @@ def probe(
     Uses extract_flat='in_playlist' so playlist entries return as lightweight
     references rather than full per-entry metadata fetches.
 
-    noplaylist=True follows yt-dlp's convention: a URL like ?v=X&list=Y is
-    treated as a single video with playlist context, not as the playlist
-    itself. Pure playlist URLs (?list=PLxxx with no ?v=) are still detected
-    as playlists because there's no video to anchor to.
+    `noplaylist` is set based on the URL's list-ID prefix:
+      - radio-mix lists (`list=RD...`) get `noplaylist=True` so a
+        `?v=X&list=RDX` auto-redirect downloads just the video the user
+        pasted, not the 25-track synthetic mix YouTube generated.
+      - everything else (real playlists like `list=PL...`, `OL...`, etc.,
+        and pure `playlist?list=...` URLs) gets `noplaylist=False` so the
+        probe returns the playlist info dict and the worker expands the
+        entries into child jobs.
 
     ``socket_timeout`` bounds yt-dlp's HTTP reads. Without it, certain
     YouTube URLs (e.g. an unavailable video or an anti-bot challenge gone
@@ -250,7 +275,7 @@ def probe(
         "quiet": True,
         "extract_flat": "in_playlist",
         "skip_download": True,
-        "noplaylist": True,
+        "noplaylist": _is_radio_mix(url),
         "remote_components": ["ejs:github"],
         "socket_timeout": socket_timeout,
     }

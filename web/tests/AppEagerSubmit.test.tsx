@@ -792,6 +792,109 @@ describe("App eager submit (Queue button + Enter)", () => {
     globalThis.fetch = originalMock;
   });
 
+  it("URL-canonicalization during preview does not arm a countdown for failed Queue", async () => {
+    // Codex P2: user pastes 'youtu.be/abc', clicks Queue, POST fails,
+    // URL restored. Preview later returns the canonical
+    // 'youtube.com/watch?v=abc'. The lock keyed on the raw paste
+    // doesn't match singleEntry.url; without the urlRef.current fallback
+    // check, the countdown would arm and auto-retry.
+    const originalMock = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      if (path === "/jobs" && init?.method === "POST") {
+        postedBodies.push(JSON.parse((init.body as string) ?? "{}"));
+        return jsonResponse({ detail: "boom" }, 400);
+      }
+      if (path === "/jobs" || path.startsWith("/jobs?")) {
+        return jsonResponse({ jobs: [], total: 0 });
+      }
+      if (path === "/status") return statusResponder();
+      if (path === "/preview") {
+        // Canonicalized form — different string from what the user
+        // pasted ("youtu.be/abc").
+        return jsonResponse({
+          kind: "video",
+          title: null,
+          entries: [
+            {
+              url: "https://www.youtube.com/watch?v=abc",
+              id: "abc",
+              title: "Vid",
+              position: 1,
+            },
+          ],
+        });
+      }
+      if (path === "/preview/enrich") {
+        return jsonResponse({
+          entries: [
+            {
+              url: "https://www.youtube.com/watch?v=abc",
+              title: "Vid",
+              duration_s: 60,
+              uploader: "U",
+              thumbnail_url: null,
+              error: null,
+            },
+          ],
+        });
+      }
+      if (path.startsWith("/jobs/clear/preview")) {
+        return jsonResponse({ clearable: 0, older_than_days: 7 });
+      }
+      return new Response("not found", { status: 404 });
+    }) as unknown as typeof globalThis.fetch;
+
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /^Queue$/ })).toBeInTheDocument();
+    });
+
+    vi.useFakeTimers();
+    try {
+      const input = screen.getByPlaceholderText(/Paste a YouTube URL/i) as HTMLInputElement;
+      fireEvent.change(input, { target: { value: "https://youtu.be/abc" } });
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: /^Queue$/ }));
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(postedBodies.length).toBe(1);
+
+      // URL was restored.
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(input.value).toBe("https://youtu.be/abc");
+
+      // Now let preview resolve to the canonical form, then run the full
+      // auto-submit window. The lock should match via urlRef.current
+      // (the raw paste) even though singleEntry.url is the canonical form.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(600);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      // No banner, no auto-retry.
+      expect(screen.queryByRole("status")).not.toBeInTheDocument();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      expect(postedBodies.length).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    globalThis.fetch = originalMock;
+  });
+
   it("Queue button stays disabled until the URL passes the shape check", async () => {
     render(<App />);
     await waitFor(() => {

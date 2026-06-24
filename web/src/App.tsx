@@ -538,7 +538,20 @@ export default function App() {
     // this effect when `submitting` flips back to false; without this
     // guard, a failed submit would loop POSTs every `delay` seconds and
     // a cancelled banner would come back unbidden.
-    if (autoSubmitAttemptedFor.current === singleEntry.url) {
+    //
+    // Match against BOTH the resolved preview URL AND the input URL.
+    // yt-dlp's probe canonicalizes some URLs (`youtu.be/X` becomes
+    // `youtube.com/watch?v=X`), so a lock keyed on the raw paste would
+    // miss the canonical form. Comparing against urlRef.current covers
+    // the failure-restore case where the user is still looking at the
+    // input they manually attempted, regardless of canonicalization.
+    // Reading via the ref (not the url state directly) avoids needing
+    // `url` in the deps array — it's updated synchronously by
+    // updateUrl(), so it's always current when this effect runs.
+    if (
+      autoSubmitAttemptedFor.current === singleEntry.url ||
+      autoSubmitAttemptedFor.current === urlRef.current
+    ) {
       return;
     }
     // Capture the URL at countdown-start so a late tick (interleaved with

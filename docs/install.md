@@ -71,7 +71,7 @@ That's it. No global install, no system service.
 
 This spins up:
 
-- The FastAPI backend on `http://127.0.0.1:8765`
+- The FastAPI backend on `http://127.0.0.1:8766`
 - The Vite dev server on `http://127.0.0.1:5174`
 
 Open `http://127.0.0.1:5174` in your browser. The UI is one column: a URL
@@ -207,8 +207,8 @@ queue auto-upgrading. No action needed.
 ## Troubleshooting
 
 **"Preview stays at 'Fetching preview…' forever."** Most likely the API
-server isn't responding. Check that port 8765 is up: `curl
-http://127.0.0.1:8765/status`. If that hangs too, the FastAPI loop wedged
+server isn't responding. Check that port 8766 is up: `curl
+http://127.0.0.1:8766/status`. If that hangs too, the FastAPI loop wedged
 on a yt-dlp probe. Hit `Ctrl-C` on `dev.sh` and restart.
 
 **"ERROR: unable to download video data: HTTP Error 403: Forbidden."**

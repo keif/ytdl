@@ -21,7 +21,7 @@ That downloads one URL synchronously to `~/Videos/ytdl/`.
 To run the API + web UI:
 
     ./dev.sh
-    # API at http://127.0.0.1:8765
+    # API at http://127.0.0.1:8766
     # UI  at http://127.0.0.1:5174 (Vite dev server proxies to the API)
 
 The dev script starts uvicorn with HMR and Vite in parallel; Ctrl+C kills both.
@@ -30,7 +30,7 @@ The dev script starts uvicorn with HMR and Vite in parallel; Ctrl+C kills both.
 
     cd docker
     docker compose up -d --build
-    # UI + API at http://localhost:8765
+    # UI + API at http://localhost:8766
 
 The compose file mounts `~/Videos/ytdl` for downloads and `./data/` for the SQLite database. `ffmpeg` is baked into the image.
 
@@ -112,7 +112,7 @@ yt-dlp picks it up automatically. Without a runtime you'll see `n challenge solv
                             # downloads only the listed 1-based indices/ranges.
     ytdl preview <url>      # Probe a URL and print a numbered table of entries.
                             # Pair with `get --pick` or `queue add --pick`.
-    ytdl serve [--host 127.0.0.1] [--port 8765]
+    ytdl serve [--host 127.0.0.1] [--port 8766]
                             # Start the API + web UI. Banner prints the
                             # cookies source (auto-detect or explicit).
     ytdl queue ls [--status pending|running|done|failed|canceling|canceled]

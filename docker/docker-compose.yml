@@ -7,7 +7,7 @@ services:
     container_name: ytdl
     restart: unless-stopped
     ports:
-      - "8765:8765"
+      - "8766:8766"
     volumes:
       - ~/Videos/ytdl:/downloads
       - ./data:/data

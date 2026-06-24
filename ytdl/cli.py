@@ -245,7 +245,7 @@ def preview(
 @app.command()
 def serve(
     host: str = typer.Option("127.0.0.1", "--host"),
-    port: int = typer.Option(8765, "--port"),
+    port: int = typer.Option(8766, "--port"),
 ) -> None:
     """Start the API + web UI."""
     import uvicorn

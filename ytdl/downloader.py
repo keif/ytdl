@@ -298,7 +298,13 @@ def probe(
     if cookies_browser:
         opts["cookiesfrombrowser"] = (cookies_browser,)
     with YoutubeDL(opts) as ydl:
-        return ydl.extract_info(url, download=False, process=False)
+        # process=True (yt-dlp's default) is required for `noplaylist=False`
+        # to take effect on hybrid `?v=X&list=...` URLs. With process=False
+        # yt-dlp returns `_type: url` (a lightweight wrapper that hasn't
+        # consulted noplaylist), and the worker treats it as a single
+        # video. `extract_flat='in_playlist'` keeps the work cheap — we
+        # get flat entry stubs, not per-video info dicts.
+        return ydl.extract_info(url, download=False)
 
 
 def probe_one(
@@ -326,7 +332,10 @@ def probe_one(
     if cookies_browser:
         opts["cookiesfrombrowser"] = (cookies_browser,)
     with YoutubeDL(opts) as ydl:
-        return ydl.extract_info(url, download=False, process=False)
+        # See probe() for why process=False is wrong here too — enrichment
+        # needs duration/uploader/thumbnail, all of which require yt-dlp
+        # to actually resolve the URL, not just wrap it.
+        return ydl.extract_info(url, download=False)
 
 
 def download(job, ctx: DownloadContext) -> DownloadResult:

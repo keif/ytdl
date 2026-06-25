@@ -427,63 +427,82 @@ def test_download_aborts_when_cancel_flag_set(tmp_path: Path) -> None:
         download(job, ctx)
 
 
-# ---- radio-mix detection ----
+# ---- noplaylist discriminator ----
+# The probe uses `noplaylist=True` by default — yt-dlp treats it as a
+# discriminator for THREE distinct YouTube quirks: radio-mix auto-redirects
+# (`?v=X&list=RDX`), multifeed / multicamera videos that return as
+# "playlists" of feeds, and plain `?v=X` URLs. The ONLY case where we want
+# `noplaylist=False` is a real user-curated playlist URL (`list=PL...`).
 
 
-def test_is_radio_mix_pure_video_url() -> None:
-    from ytdl.downloader import _is_radio_mix
+def test_url_targets_real_playlist_pure_video_url() -> None:
+    from ytdl.downloader import _url_targets_real_playlist
 
-    assert _is_radio_mix("https://www.youtube.com/watch?v=abc") is False
-
-
-def test_is_radio_mix_pure_playlist_url() -> None:
-    from ytdl.downloader import _is_radio_mix
-
-    # Pure playlist URL — no `v=`, list ID is a PL.
-    assert _is_radio_mix("https://www.youtube.com/playlist?list=PLxyz") is False
+    # Plain video URL — no list at all. Must be False so noplaylist=True
+    # protects against multifeed/multicamera expansion.
+    assert _url_targets_real_playlist("https://www.youtube.com/watch?v=abc") is False
 
 
-def test_is_radio_mix_hybrid_real_playlist() -> None:
-    from ytdl.downloader import _is_radio_mix
+def test_url_targets_real_playlist_pure_playlist_url() -> None:
+    from ytdl.downloader import _url_targets_real_playlist
+
+    # Pure playlist URL — no `v=`, list ID is a PL. Must expand.
+    assert _url_targets_real_playlist("https://www.youtube.com/playlist?list=PLxyz") is True
+
+
+def test_url_targets_real_playlist_hybrid_real_playlist() -> None:
+    from ytdl.downloader import _url_targets_real_playlist
 
     # The bug report case: user pastes a video URL while watching inside
     # a real playlist. Address bar has both `v=` and a PL-prefixed list.
-    # This must NOT be classified as a radio mix.
+    # This SHOULD expand.
     assert (
-        _is_radio_mix("https://www.youtube.com/watch?v=abc&list=PLxyz123") is False
+        _url_targets_real_playlist(
+            "https://www.youtube.com/watch?v=abc&list=PLxyz123"
+        )
+        is True
     )
 
 
-def test_is_radio_mix_hybrid_radio_url() -> None:
-    from ytdl.downloader import _is_radio_mix
+def test_url_targets_real_playlist_hybrid_radio_url() -> None:
+    from ytdl.downloader import _url_targets_real_playlist
 
     # YouTube auto-redirects some `?v=X` URLs to `?v=X&list=RDX` for
-    # synthetic 25-track mixes. Treat these as single videos.
+    # synthetic 25-track mixes. Must be False (single video).
     assert (
-        _is_radio_mix("https://www.youtube.com/watch?v=abc&list=RDabc") is True
+        _url_targets_real_playlist(
+            "https://www.youtube.com/watch?v=abc&list=RDabc"
+        )
+        is False
     )
 
 
-def test_is_radio_mix_mix_radio_variants() -> None:
-    from ytdl.downloader import _is_radio_mix
+def test_url_targets_real_playlist_mix_radio_variants() -> None:
+    from ytdl.downloader import _url_targets_real_playlist
 
     # All RD-prefixed lists are auto-generated radio/mix variants.
-    assert _is_radio_mix("https://www.youtube.com/watch?v=x&list=RDMM123") is True
-    assert _is_radio_mix("https://www.youtube.com/watch?v=x&list=RDCLAK1") is True
+    assert (
+        _url_targets_real_playlist("https://www.youtube.com/watch?v=x&list=RDMM123")
+        is False
+    )
+    assert (
+        _url_targets_real_playlist("https://www.youtube.com/watch?v=x&list=RDCLAK1")
+        is False
+    )
 
 
-def test_is_radio_mix_other_curated_lists() -> None:
-    from ytdl.downloader import _is_radio_mix
+def test_url_targets_real_playlist_other_curated_lists() -> None:
+    from ytdl.downloader import _url_targets_real_playlist
 
-    # Liked, Watch Later, Library Mix — user-curated, not radio.
-    assert _is_radio_mix("https://www.youtube.com/playlist?list=LL") is False
-    assert _is_radio_mix("https://www.youtube.com/playlist?list=WL") is False
-    assert _is_radio_mix("https://www.youtube.com/playlist?list=LM") is False
+    # Liked, Watch Later, Library Mix — user-curated, expand them.
+    assert _url_targets_real_playlist("https://www.youtube.com/playlist?list=LL") is True
+    assert _url_targets_real_playlist("https://www.youtube.com/playlist?list=WL") is True
+    assert _url_targets_real_playlist("https://www.youtube.com/playlist?list=LM") is True
 
 
-def test_is_radio_mix_malformed_url() -> None:
-    from ytdl.downloader import _is_radio_mix
+def test_url_targets_real_playlist_malformed_url() -> None:
+    from ytdl.downloader import _url_targets_real_playlist
 
     # Garbage input shouldn't raise — return False (defer to yt-dlp).
-    assert _is_radio_mix("not a url at all") is False
-    assert _is_radio_mix("") is False
+    assert _url_targets_real_playlist("not a url at all") is False
+    assert _url_targets_real_playlist("") is False

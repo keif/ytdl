@@ -17,24 +17,31 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 
-def _is_radio_mix(url: str) -> bool:
-    """Detect YouTube radio-mix URLs (?v=X&list=RD...) that should be
-    downloaded as a single video, not expanded as a playlist.
+def _url_targets_real_playlist(url: str) -> bool:
+    """Return True if the URL points at a user-curated playlist that
+    should be expanded into child jobs.
 
-    YouTube list IDs encode kind by prefix:
-      - RD, RDMM, RDCLAK, ... -> auto-generated radio / mix
-      - PL, OL, UU, LL, WL, LM, FL, ... -> user-curated / channel lists
+    The default for everything else (plain video URLs, radio mixes,
+    malformed inputs) is False so we set `noplaylist=True` on the probe.
+    That single setting handles three distinct YouTube quirks at once:
+      - radio mixes (`?v=X&list=RDX` auto-redirects) — keep just the
+        video the user pasted, not the synthetic 25-track mix
+      - multifeed / multicamera videos — keep just the single video, not
+        a "playlist" of feeds
+      - plain `?v=X` URLs — just download the video
 
-    For radio mixes, the user almost certainly wanted just the video they
-    pasted — auto-redirects to `?v=X&list=RDX` are aggressive. For real
-    playlists, the user wanted the playlist; their intent is to expand.
+    Returns True only when the URL carries a `list=` parameter whose ID
+    is NOT a radio-mix variant (RD-prefixed). PL, OL, UU, LL, WL, LM,
+    FL, and other curated prefixes pass through.
     """
     try:
         qs = parse_qs(urlparse(url).query)
     except Exception:
         return False
     list_ids = qs.get("list", [])
-    return bool(list_ids) and list_ids[0].startswith("RD")
+    if not list_ids:
+        return False
+    return not list_ids[0].startswith("RD")
 
 
 class Classification(StrEnum):
@@ -254,14 +261,13 @@ def probe(
     Uses extract_flat='in_playlist' so playlist entries return as lightweight
     references rather than full per-entry metadata fetches.
 
-    `noplaylist` is set based on the URL's list-ID prefix:
-      - radio-mix lists (`list=RD...`) get `noplaylist=True` so a
-        `?v=X&list=RDX` auto-redirect downloads just the video the user
-        pasted, not the 25-track synthetic mix YouTube generated.
-      - everything else (real playlists like `list=PL...`, `OL...`, etc.,
-        and pure `playlist?list=...` URLs) gets `noplaylist=False` so the
-        probe returns the playlist info dict and the worker expands the
-        entries into child jobs.
+    `noplaylist` is True by default — yt-dlp uses it as a discriminator
+    for three distinct YouTube quirks: radio-mix auto-redirects
+    (`?v=X&list=RDX`), multifeed/multicamera videos that return as
+    "playlists" of feeds, and plain `?v=X` URLs. The only case where we
+    want it False is when the URL carries a list ID that's clearly a
+    user-curated playlist (`PL`, `OL`, etc.) — see
+    `_url_targets_real_playlist`.
 
     ``socket_timeout`` bounds yt-dlp's HTTP reads. Without it, certain
     YouTube URLs (e.g. an unavailable video or an anti-bot challenge gone
@@ -275,7 +281,7 @@ def probe(
         "quiet": True,
         "extract_flat": "in_playlist",
         "skip_download": True,
-        "noplaylist": _is_radio_mix(url),
+        "noplaylist": not _url_targets_real_playlist(url),
         "remote_components": ["ejs:github"],
         "socket_timeout": socket_timeout,
     }

@@ -582,3 +582,68 @@ def test_url_targets_real_playlist_malformed_url() -> None:
     # Garbage input shouldn't raise — return False (defer to yt-dlp).
     assert _url_targets_real_playlist("not a url at all") is False
     assert _url_targets_real_playlist("") is False
+
+
+# ---- probe() must not pass process=False ----
+# yt-dlp's `process=False` returns `_type: url` (a lightweight wrapper
+# that hasn't consulted `noplaylist`), so hybrid `?v=X&list=...` URLs
+# silently come back as single videos even when we want playlist
+# expansion. Lock this in.
+
+
+def test_probe_does_not_set_process_false() -> None:
+    """probe() must not call extract_info with process=False — that flag
+    short-circuits the playlist extraction and breaks the noplaylist=False
+    path for hybrid URLs."""
+    from unittest.mock import MagicMock, patch
+
+    with patch("yt_dlp.YoutubeDL") as ydl_cls:
+        ydl_inst = MagicMock()
+        ydl_inst.__enter__ = MagicMock(return_value=ydl_inst)
+        ydl_inst.__exit__ = MagicMock(return_value=False)
+        ydl_inst.extract_info.return_value = {
+            "_type": "playlist",
+            "entries": [],
+        }
+        ydl_cls.return_value = ydl_inst
+
+        from ytdl.downloader import probe
+
+        probe("https://www.youtube.com/watch?v=X&list=PLxyz")
+
+    # extract_info should have been called with download=False, but
+    # crucially NOT with process=False (default True).
+    call = ydl_inst.extract_info.call_args
+    assert call is not None
+    assert call.kwargs.get("process") is not False, (
+        "probe() must not pass process=False — that flag suppresses "
+        "playlist extraction and would re-introduce the hybrid-URL bug"
+    )
+
+
+def test_probe_one_does_not_set_process_false() -> None:
+    """probe_one() needs the actual per-video metadata (duration,
+    uploader, thumbnail). With process=False, yt-dlp returns a URL
+    stub without any of those fields."""
+    from unittest.mock import MagicMock, patch
+
+    with patch("yt_dlp.YoutubeDL") as ydl_cls:
+        ydl_inst = MagicMock()
+        ydl_inst.__enter__ = MagicMock(return_value=ydl_inst)
+        ydl_inst.__exit__ = MagicMock(return_value=False)
+        ydl_inst.extract_info.return_value = {
+            "title": "x",
+            "duration": 60,
+        }
+        ydl_cls.return_value = ydl_inst
+
+        from ytdl.downloader import probe_one
+
+        probe_one("https://www.youtube.com/watch?v=X")
+
+    call = ydl_inst.extract_info.call_args
+    assert call is not None
+    assert call.kwargs.get("process") is not False, (
+        "probe_one() must not pass process=False — enrichment fields "
+        "are unavailable in the URL-stub mode"
+    )

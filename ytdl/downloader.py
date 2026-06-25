@@ -14,6 +14,34 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
+from urllib.parse import parse_qs, urlparse
+
+
+def _url_targets_real_playlist(url: str) -> bool:
+    """Return True if the URL points at a user-curated playlist that
+    should be expanded into child jobs.
+
+    The default for everything else (plain video URLs, radio mixes,
+    malformed inputs) is False so we set `noplaylist=True` on the probe.
+    That single setting handles three distinct YouTube quirks at once:
+      - radio mixes (`?v=X&list=RDX` auto-redirects) — keep just the
+        video the user pasted, not the synthetic 25-track mix
+      - multifeed / multicamera videos — keep just the single video, not
+        a "playlist" of feeds
+      - plain `?v=X` URLs — just download the video
+
+    Returns True only when the URL carries a `list=` parameter whose ID
+    is NOT a radio-mix variant (RD-prefixed). PL, OL, UU, LL, WL, LM,
+    FL, and other curated prefixes pass through.
+    """
+    try:
+        qs = parse_qs(urlparse(url).query)
+    except Exception:
+        return False
+    list_ids = qs.get("list", [])
+    if not list_ids:
+        return False
+    return not list_ids[0].startswith("RD")
 
 
 class Classification(StrEnum):
@@ -175,9 +203,19 @@ def _build_ydl_options(job, ctx: DownloadContext, throttle: ProgressThrottle) ->
         "progress_hooks": [hook],
         "merge_output_format": "mp4",
         "concurrent_fragment_downloads": 4,
-        # Treat ?v=X&list=Y as a single video with playlist context, not the
-        # playlist itself. Pure playlist URLs (no ?v=) are unaffected.
-        "noplaylist": True,
+        # Playlist children carry single-video URLs (the worker extracted
+        # them via probe), so noplaylist=True is correct — yt-dlp must not
+        # re-expand them. For top-level jobs, the same RD-vs-other rule
+        # the probe uses applies: protect against radio-mix auto-redirects
+        # and multifeed videos, but let real playlists (PL/OL/etc.) flow
+        # through. Without this branch the CLI's `ytdl get` (which bypasses
+        # the queue) would download only the single video from a hybrid
+        # playlist URL.
+        "noplaylist": (
+            True
+            if job.parent_job_id is not None
+            else not _url_targets_real_playlist(job.url)
+        ),
         # yt-dlp 2026.x ships challenge solver scripts (EJS) as opt-in remote
         # components. Without this, YouTube's n-challenge fails and no
         # video formats are returned ("Requested format is not available").
@@ -233,10 +271,13 @@ def probe(
     Uses extract_flat='in_playlist' so playlist entries return as lightweight
     references rather than full per-entry metadata fetches.
 
-    noplaylist=True follows yt-dlp's convention: a URL like ?v=X&list=Y is
-    treated as a single video with playlist context, not as the playlist
-    itself. Pure playlist URLs (?list=PLxxx with no ?v=) are still detected
-    as playlists because there's no video to anchor to.
+    `noplaylist` is True by default — yt-dlp uses it as a discriminator
+    for three distinct YouTube quirks: radio-mix auto-redirects
+    (`?v=X&list=RDX`), multifeed/multicamera videos that return as
+    "playlists" of feeds, and plain `?v=X` URLs. The only case where we
+    want it False is when the URL carries a list ID that's clearly a
+    user-curated playlist (`PL`, `OL`, etc.) — see
+    `_url_targets_real_playlist`.
 
     ``socket_timeout`` bounds yt-dlp's HTTP reads. Without it, certain
     YouTube URLs (e.g. an unavailable video or an anti-bot challenge gone
@@ -250,7 +291,7 @@ def probe(
         "quiet": True,
         "extract_flat": "in_playlist",
         "skip_download": True,
-        "noplaylist": True,
+        "noplaylist": not _url_targets_real_playlist(url),
         "remote_components": ["ejs:github"],
         "socket_timeout": socket_timeout,
     }

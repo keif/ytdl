@@ -203,9 +203,19 @@ def _build_ydl_options(job, ctx: DownloadContext, throttle: ProgressThrottle) ->
         "progress_hooks": [hook],
         "merge_output_format": "mp4",
         "concurrent_fragment_downloads": 4,
-        # Treat ?v=X&list=Y as a single video with playlist context, not the
-        # playlist itself. Pure playlist URLs (no ?v=) are unaffected.
-        "noplaylist": True,
+        # Playlist children carry single-video URLs (the worker extracted
+        # them via probe), so noplaylist=True is correct — yt-dlp must not
+        # re-expand them. For top-level jobs, the same RD-vs-other rule
+        # the probe uses applies: protect against radio-mix auto-redirects
+        # and multifeed videos, but let real playlists (PL/OL/etc.) flow
+        # through. Without this branch the CLI's `ytdl get` (which bypasses
+        # the queue) would download only the single video from a hybrid
+        # playlist URL.
+        "noplaylist": (
+            True
+            if job.parent_job_id is not None
+            else not _url_targets_real_playlist(job.url)
+        ),
         # yt-dlp 2026.x ships challenge solver scripts (EJS) as opt-in remote
         # components. Without this, YouTube's n-challenge fails and no
         # video formats are returned ("Requested format is not available").

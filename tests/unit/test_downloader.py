@@ -234,14 +234,90 @@ def test_download_progress_hook_fires_through_throttle(tmp_path: Path) -> None:
     assert captured[0]["status"] == "downloading"
 
 
-def test_build_ydl_options_sets_noplaylist(tmp_path: Path) -> None:
-    """A URL like ?v=X&list=Y should download only the single video.
-
-    yt-dlp respects noplaylist=True by treating the &list= as context.
-    """
+def test_build_ydl_options_sets_noplaylist_for_plain_video(tmp_path: Path) -> None:
+    """Plain video URLs (no list parameter) must keep noplaylist=True so
+    yt-dlp's multifeed/multicamera handling doesn't expand them into
+    feed-as-playlist results."""
     from ytdl.downloader import _build_ydl_options
 
     job = _make_job(tmp_path)
+    ctx = DownloadContext(
+        ydl_cls=None,
+        cookies_browser=None,
+        on_progress=lambda d: None,
+        cancel_flag=lambda: False,
+    )
+    opts = _build_ydl_options(job, ctx, ProgressThrottle())
+    assert opts["noplaylist"] is True
+
+
+def test_build_ydl_options_keeps_noplaylist_for_radio_mix(tmp_path: Path) -> None:
+    """Hybrid radio-mix URLs (?v=X&list=RDX) must still download as single
+    videos — the synthetic 25-track mix is never what the user wanted."""
+    from ytdl.downloader import _build_ydl_options
+    from ytdl.models import Job, JobKind, JobStatus
+
+    job = Job(
+        id="01",
+        url="https://www.youtube.com/watch?v=abc&list=RDabc",
+        kind=JobKind.VIDEO,
+        parent_job_id=None,
+        status=JobStatus.RUNNING,
+        format_pref="best",
+        output_dir=str(tmp_path),
+    )
+    ctx = DownloadContext(
+        ydl_cls=None,
+        cookies_browser=None,
+        on_progress=lambda d: None,
+        cancel_flag=lambda: False,
+    )
+    opts = _build_ydl_options(job, ctx, ProgressThrottle())
+    assert opts["noplaylist"] is True
+
+
+def test_build_ydl_options_clears_noplaylist_for_real_hybrid_playlist(tmp_path: Path) -> None:
+    """A direct `ytdl get https://...watch?v=X&list=PL...` must expand the
+    playlist, not download only the single video. This is the bug report
+    case — the CLI bypasses probe() and calls download() directly."""
+    from ytdl.downloader import _build_ydl_options
+    from ytdl.models import Job, JobKind, JobStatus
+
+    job = Job(
+        id="01",
+        url="https://www.youtube.com/watch?v=abc&list=PLxyz",
+        kind=JobKind.VIDEO,
+        parent_job_id=None,
+        status=JobStatus.RUNNING,
+        format_pref="best",
+        output_dir=str(tmp_path),
+    )
+    ctx = DownloadContext(
+        ydl_cls=None,
+        cookies_browser=None,
+        on_progress=lambda d: None,
+        cancel_flag=lambda: False,
+    )
+    opts = _build_ydl_options(job, ctx, ProgressThrottle())
+    assert opts["noplaylist"] is False
+
+
+def test_build_ydl_options_forces_noplaylist_for_playlist_children(tmp_path: Path) -> None:
+    """Playlist children carry single-video URLs (the worker extracted them
+    from the playlist probe). Even if the URL somehow looked playlist-shaped,
+    noplaylist must be True to prevent re-expansion."""
+    from ytdl.downloader import _build_ydl_options
+    from ytdl.models import Job, JobKind, JobStatus
+
+    job = Job(
+        id="01",
+        url="https://www.youtube.com/watch?v=abc&list=PLxyz",
+        kind=JobKind.VIDEO,
+        parent_job_id="parent-id-xyz",
+        status=JobStatus.RUNNING,
+        format_pref="best",
+        output_dir=str(tmp_path),
+    )
     ctx = DownloadContext(
         ydl_cls=None,
         cookies_browser=None,

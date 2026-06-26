@@ -27,10 +27,10 @@ packages = ["ytdl"]
 
 [dependency-groups]
 dev = [
-  "pytest>=9.1.0",
+  "pytest>=9.1.1",
   "pytest-asyncio>=1.4.0",
   "pytest-httpx>=0.36.2",
-  "ruff>=0.15.18",
+  "ruff>=0.15.20",
   "mypy>=2.1.0",
 ]
 

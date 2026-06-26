@@ -679,14 +679,20 @@ def test_probe_subprocess_timeout_reraised_as_timeout_error(
 def test_probe_nonzero_exit_propagates_structured_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When the worker exits non-zero, the JSON error payload on stderr
-    must be unpacked and re-raised as RuntimeError."""
+    """When the worker exits non-zero, the JSON error payload on STDOUT
+    must be unpacked and re-raised as RuntimeError. stdout (not stderr)
+    so yt-dlp's own ERROR / WARNING text on stderr can't corrupt the
+    payload."""
     import subprocess as _subprocess
 
     def fake_run(cmd, *, timeout, capture_output, text):
         return _fake_completed(
             returncode=1,
-            stderr='{"error": "Video unavailable", "type": "yt_dlp_error"}',
+            stdout='{"error": "Video unavailable", "type": "yt_dlp_error"}',
+            # Mirror what yt-dlp does on real failure: free-form text on
+            # stderr alongside our structured payload on stdout. The
+            # caller must not be confused by this mixture.
+            stderr="ERROR: [youtube] xxx: Video unavailable\n",
         )
 
     monkeypatch.setattr(_subprocess, "run", fake_run)
@@ -694,19 +700,25 @@ def test_probe_nonzero_exit_propagates_structured_error(
 
     with pytest.raises(RuntimeError) as exc_info:
         probe("https://yt/x")
-    assert "Video unavailable" in str(exc_info.value)
+    # The structured payload's clean message should surface — NOT a mix
+    # of yt-dlp's stderr text and our JSON.
+    assert str(exc_info.value) == "Video unavailable"
 
 
 def test_probe_nonzero_exit_with_plain_stderr_falls_back(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """If stderr isn't valid JSON (e.g. interpreter crash before our
-    error emitter ran), raise with the raw stderr text rather than
-    silently swallowing the failure."""
+    """If stdout isn't valid JSON (e.g. interpreter crash before our
+    error emitter ran), fall back to stderr text rather than silently
+    swallowing the failure."""
     import subprocess as _subprocess
 
     def fake_run(cmd, *, timeout, capture_output, text):
-        return _fake_completed(returncode=2, stderr="Traceback...\nKeyError: x\n")
+        return _fake_completed(
+            returncode=2,
+            stdout="",  # nothing on stdout — crashed before _emit_error
+            stderr="Traceback...\nKeyError: x\n",
+        )
 
     monkeypatch.setattr(_subprocess, "run", fake_run)
     from ytdl.downloader import probe

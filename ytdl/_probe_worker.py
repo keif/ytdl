@@ -26,14 +26,21 @@ where the args blob is::
 ``cookiesfrombrowser`` is a list/tuple in JSON; we coerce to tuple before
 handing to yt-dlp (which requires the tuple form).
 
+Streams:
+
+* ``stdout`` — structured JSON. On success, the info dict; on error,
+  ``{"error": "<message>", "type": "<error_type>"}``. The exit code
+  disambiguates which.
+* ``stderr`` — free-form, left to yt-dlp's own ERROR / WARNING output
+  and any Python traceback. Captured by the caller for log diagnostics
+  but never parsed as JSON.
+
 Exit codes:
 
 * 0 — success. ``stdout`` contains the JSON-encoded info dict.
-* 1 — yt-dlp raised. ``stderr`` contains
-       ``{"error": "<message>", "type": "yt_dlp_error"}``.
+* 1 — yt-dlp raised. ``stdout`` contains the structured error.
 * 2 — usage error (bad argv shape, JSON parse failure, missing fields).
-       ``stderr`` contains
-       ``{"error": "<message>", "type": "usage_error"}``.
+       ``stdout`` contains the structured error.
 """
 from __future__ import annotations
 
@@ -65,9 +72,19 @@ def _run_probe(args_blob: dict[str, Any]) -> dict[str, Any]:
 
 
 def _emit_error(error_type: str, message: str) -> None:
+    """Write the structured error to STDOUT, not stderr.
+
+    yt-dlp writes its own ERROR / WARNING text to stderr (for example
+    'ERROR: [youtube] xxx: Video unavailable'). Mixing our structured
+    JSON with yt-dlp's free-form output makes the caller's json.loads
+    fail and the user sees a wall of mixed text instead of the clean
+    error string. Keep the streams separate: stdout = structured
+    payload (machine-readable), stderr = yt-dlp's noise (diagnostic
+    capture for logs).
+    """
     payload = {"error": message, "type": error_type}
-    sys.stderr.write(json.dumps(payload))
-    sys.stderr.flush()
+    sys.stdout.write(json.dumps(payload))
+    sys.stdout.flush()
 
 
 def main(argv: list[str]) -> int:

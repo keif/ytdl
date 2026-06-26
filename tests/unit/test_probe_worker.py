@@ -133,7 +133,8 @@ def test_main_writes_info_json_on_success(
 def test_main_writes_yt_dlp_error_on_extract_failure(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """When yt-dlp raises, exit 1 with a structured JSON error on stderr."""
+    """When yt-dlp raises, exit 1 with a structured JSON error on STDOUT
+    (stderr stays free-form for yt-dlp's own ERROR / WARNING text)."""
 
     class FakeYDL:
         def __init__(self, opts: dict) -> None: ...
@@ -156,9 +157,8 @@ def test_main_writes_yt_dlp_error_on_extract_failure(
     rc = main(["ytdl._probe_worker", args])
     captured = capsys.readouterr()
     assert rc == 1
-    payload = json.loads(captured.err)
+    payload = json.loads(captured.out)
     assert payload == {"error": "Video unavailable", "type": "yt_dlp_error"}
-    assert captured.out == ""
 
 
 def test_main_rejects_missing_argv(capsys: pytest.CaptureFixture[str]) -> None:
@@ -168,7 +168,9 @@ def test_main_rejects_missing_argv(capsys: pytest.CaptureFixture[str]) -> None:
     rc = main(["ytdl._probe_worker"])
     captured = capsys.readouterr()
     assert rc == 2
-    payload = json.loads(captured.err)
+    # Structured payload is on stdout, not stderr — keeps yt-dlp's
+    # free-form output on the error path from corrupting the JSON.
+    payload = json.loads(captured.out)
     assert payload["type"] == "usage_error"
 
 
@@ -179,7 +181,9 @@ def test_main_rejects_bad_json(capsys: pytest.CaptureFixture[str]) -> None:
     rc = main(["ytdl._probe_worker", "{not json"])
     captured = capsys.readouterr()
     assert rc == 2
-    payload = json.loads(captured.err)
+    # Structured payload is on stdout, not stderr — keeps yt-dlp's
+    # free-form output on the error path from corrupting the JSON.
+    payload = json.loads(captured.out)
     assert payload["type"] == "usage_error"
     assert "invalid JSON" in payload["error"]
 
@@ -191,7 +195,9 @@ def test_main_rejects_args_missing_url(capsys: pytest.CaptureFixture[str]) -> No
     rc = main(["ytdl._probe_worker", json.dumps({"opts": {}})])
     captured = capsys.readouterr()
     assert rc == 2
-    payload = json.loads(captured.err)
+    # Structured payload is on stdout, not stderr — keeps yt-dlp's
+    # free-form output on the error path from corrupting the JSON.
+    payload = json.loads(captured.out)
     assert payload["type"] == "usage_error"
 
 
@@ -228,7 +234,10 @@ def test_subprocess_pipeline_round_trip_success() -> None:
 
 def test_subprocess_pipeline_usage_error_on_bad_argv() -> None:
     """Calling the worker with no JSON argument must hit the usage_error
-    path and exit 2 — exercises the argv contract end-to-end."""
+    path and exit 2 — exercises the argv contract end-to-end. The
+    structured payload goes to stdout (not stderr) so it can't be
+    corrupted by yt-dlp's own ERROR / WARNING text on the failure path.
+    """
     result = subprocess.run(
         [sys.executable, "-m", "ytdl._probe_worker"],
         capture_output=True,
@@ -236,5 +245,5 @@ def test_subprocess_pipeline_usage_error_on_bad_argv() -> None:
         timeout=10,
     )
     assert result.returncode == 2
-    payload = json.loads(result.stderr)
+    payload = json.loads(result.stdout)
     assert payload["type"] == "usage_error"

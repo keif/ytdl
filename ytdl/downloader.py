@@ -329,17 +329,21 @@ def _run_probe_subprocess(url: str, opts: dict, socket_timeout: int) -> dict:
         ) from exc
 
     if result.returncode != 0:
-        # The worker writes a structured JSON payload to stderr. Fall back
-        # to the raw stderr text if it's not parseable (e.g. an interpreter
-        # crash before _emit_error ran).
+        # The worker writes the structured JSON payload to STDOUT on the
+        # error path (stderr stays free-form for yt-dlp's own ERROR /
+        # WARNING text, which would otherwise corrupt the payload). Fall
+        # back to stderr only when stdout is unparseable — for example
+        # an interpreter crash that exited before _emit_error ran.
         message: str | None = None
-        if result.stderr:
+        if result.stdout:
             try:
-                payload = json.loads(result.stderr)
+                payload = json.loads(result.stdout)
                 if isinstance(payload, dict):
                     message = payload.get("error")
             except json.JSONDecodeError:
-                message = result.stderr.strip()
+                pass
+        if not message and result.stderr:
+            message = result.stderr.strip()
         raise RuntimeError(message or "probe failed")
 
     try:

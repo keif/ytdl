@@ -47,11 +47,14 @@ class Config:
     # the feature entirely — the user must click Download manually.
     autosubmit_delay_s: int = 5
     # Upper bound on a single yt-dlp probe (POST /preview, POST /preview/enrich).
-    # Threaded through to yt-dlp as `socket_timeout` AND wrapped around the
-    # asyncio.to_thread call as a wait_for window so a wedged probe can't
-    # hold a request thread forever. A normal probe takes 1-3s; 30s is the
-    # "something is very wrong" cliff. See downloader.probe / routes_preview
-    # for the two layers of enforcement.
+    # Enforced at three layers, each a backstop for the next:
+    #   1. yt-dlp's `socket_timeout` aborts a hung HTTP read.
+    #   2. subprocess.run's timeout (= socket_timeout + 5) OS-kills the worker
+    #      if yt-dlp ignores socket_timeout on some code path.
+    #   3. asyncio.wait_for around to_thread (= socket_timeout + 10) covers the
+    #      subprocess startup window.
+    # A normal probe takes 1-3s; 30s is the "something is very wrong" cliff.
+    # See downloader.probe / routes_preview / ytdl._probe_worker.
     probe_timeout_s: int = 30
 
 

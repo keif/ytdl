@@ -8,7 +8,10 @@ This module is split into two halves:
 from __future__ import annotations
 
 import errno
+import json
 import re
+import subprocess
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -258,6 +261,96 @@ def _build_ydl_options(job, ctx: DownloadContext, throttle: ProgressThrottle) ->
     return opts
 
 
+# Grace beyond yt-dlp's socket_timeout before subprocess.run pulls the
+# trigger. Covers the case where yt-dlp ignores socket_timeout on some
+# code path (e.g. a hang inside a C extension that doesn't honor the
+# Python-level deadline). Five seconds is enough for graceful HTTP
+# teardown without making genuine slow probes appear stuck.
+_SUBPROCESS_GRACE_S = 5
+
+
+def _build_probe_opts(
+    url: str,
+    cookies_browser: str | None,
+    socket_timeout: int,
+    *,
+    flat: bool,
+    use_playlist: bool,
+) -> dict:
+    """Construct the YoutubeDL opts dict shared by probe() and probe_one().
+
+    ``flat`` selects extract_flat='in_playlist' (cheap entry stubs for
+    upfront listing) versus the full per-video fetch used by enrichment.
+    ``use_playlist`` is the inverse of yt-dlp's noplaylist knob.
+
+    cookiesfrombrowser is a list here (not a tuple) so it survives JSON
+    serialization to the subprocess; the worker coerces back to tuple
+    before handing to yt-dlp.
+    """
+    opts: dict = {
+        "quiet": True,
+        "skip_download": True,
+        "noplaylist": not use_playlist,
+        "remote_components": ["ejs:github"],
+        "socket_timeout": socket_timeout,
+    }
+    if flat:
+        opts["extract_flat"] = "in_playlist"
+    if cookies_browser:
+        opts["cookiesfrombrowser"] = [cookies_browser]
+    return opts
+
+
+def _run_probe_subprocess(url: str, opts: dict, socket_timeout: int) -> dict:
+    """Run the probe worker as a subprocess and return the info dict.
+
+    Layered timeouts:
+
+    1. yt-dlp's ``socket_timeout`` aborts a hung HTTP read.
+    2. ``subprocess.run(timeout=socket_timeout + grace)`` is the backstop —
+       when this fires, the OS kills the child process, releasing the
+       executor thread immediately (the bug that ``asyncio.wait_for``
+       could not solve in-process).
+
+    Re-raises ``subprocess.TimeoutExpired`` as ``TimeoutError`` so callers
+    can keep using ``except TimeoutError`` symmetric with the asyncio.
+    """
+    args_blob = json.dumps({"url": url, "opts": opts})
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "ytdl._probe_worker", args_blob],
+            timeout=socket_timeout + _SUBPROCESS_GRACE_S,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise TimeoutError(
+            f"probe timed out after {socket_timeout + _SUBPROCESS_GRACE_S}s"
+        ) from exc
+
+    if result.returncode != 0:
+        # The worker writes a structured JSON payload to stderr. Fall back
+        # to the raw stderr text if it's not parseable (e.g. an interpreter
+        # crash before _emit_error ran).
+        message: str | None = None
+        if result.stderr:
+            try:
+                payload = json.loads(result.stderr)
+                if isinstance(payload, dict):
+                    message = payload.get("error")
+            except json.JSONDecodeError:
+                message = result.stderr.strip()
+        raise RuntimeError(message or "probe failed")
+
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        # Worker exited zero but stdout wasn't JSON — should never happen
+        # in practice, but raising explicitly beats letting the caller
+        # crash on a missing key.
+        raise RuntimeError(f"probe returned malformed JSON: {exc}") from exc
+
+
 def probe(
     url: str,
     *,
@@ -276,32 +369,20 @@ def probe(
     `noplaylist=False` so the probe returns the playlist info and the
     worker / UI offers the picker. See `_url_targets_a_playlist`.
 
-    ``socket_timeout`` bounds yt-dlp's HTTP reads. Without it, certain
-    YouTube URLs (e.g. an unavailable video or an anti-bot challenge gone
-    sideways) can hang the worker thread indefinitely. The caller wraps
-    asyncio.to_thread in wait_for as a backstop in case yt-dlp ignores
-    this knob on some code path.
+    ``socket_timeout`` bounds yt-dlp's HTTP reads. The call runs in a
+    subprocess (see ``ytdl._probe_worker``) so ``subprocess.run``'s own
+    timeout — set to ``socket_timeout + 5`` — can OS-kill yt-dlp if it
+    ignores the socket-level deadline. This is the fix for the leaked
+    executor threads described in PR #46.
     """
-    from yt_dlp import YoutubeDL
-
-    opts: dict = {
-        "quiet": True,
-        "extract_flat": "in_playlist",
-        "skip_download": True,
-        "noplaylist": not _url_targets_a_playlist(url),
-        "remote_components": ["ejs:github"],
-        "socket_timeout": socket_timeout,
-    }
-    if cookies_browser:
-        opts["cookiesfrombrowser"] = (cookies_browser,)
-    with YoutubeDL(opts) as ydl:
-        # process=True (yt-dlp's default) is required for `noplaylist=False`
-        # to take effect on hybrid `?v=X&list=...` URLs. With process=False
-        # yt-dlp returns `_type: url` (a lightweight wrapper that hasn't
-        # consulted noplaylist), and the worker treats it as a single
-        # video. `extract_flat='in_playlist'` keeps the work cheap — we
-        # get flat entry stubs, not per-video info dicts.
-        return ydl.extract_info(url, download=False)
+    opts = _build_probe_opts(
+        url,
+        cookies_browser,
+        socket_timeout,
+        flat=True,
+        use_playlist=_url_targets_a_playlist(url),
+    )
+    return _run_probe_subprocess(url, opts, socket_timeout)
 
 
 def probe_one(
@@ -315,24 +396,16 @@ def probe_one(
     Slower than ``probe()`` — one HTTP fetch per call. Use for lazy
     enrichment after a flat preview, not for upfront playlist listing.
 
-    Same ``socket_timeout`` semantics as ``probe()``.
+    Same subprocess + ``socket_timeout`` semantics as ``probe()``.
     """
-    from yt_dlp import YoutubeDL
-
-    opts: dict = {
-        "quiet": True,
-        "skip_download": True,
-        "noplaylist": True,
-        "remote_components": ["ejs:github"],
-        "socket_timeout": socket_timeout,
-    }
-    if cookies_browser:
-        opts["cookiesfrombrowser"] = (cookies_browser,)
-    with YoutubeDL(opts) as ydl:
-        # See probe() for why process=False is wrong here too — enrichment
-        # needs duration/uploader/thumbnail, all of which require yt-dlp
-        # to actually resolve the URL, not just wrap it.
-        return ydl.extract_info(url, download=False)
+    opts = _build_probe_opts(
+        url,
+        cookies_browser,
+        socket_timeout,
+        flat=False,
+        use_playlist=False,
+    )
+    return _run_probe_subprocess(url, opts, socket_timeout)
 
 
 def download(job, ctx: DownloadContext) -> DownloadResult:

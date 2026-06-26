@@ -92,18 +92,11 @@ async def post_preview(payload: PreviewRequest, request: Request) -> PreviewResp
     cfg = request.app.state.config
     cookies = cfg.cookies_browser
     probe_timeout = cfg.probe_timeout_s
-    # Belt and suspenders: pass socket_timeout to yt-dlp AND wrap the
-    # to_thread call in wait_for. The +5s wait_for grace lets yt-dlp's
-    # own socket_timeout fire and surface a normal probe error before
-    # the asyncio guard kicks in.
-    #
-    # IMPORTANT: asyncio.wait_for cancellation does NOT actually kill the
-    # underlying thread. If yt-dlp truly wedges, the thread keeps running
-    # and the executor slot stays occupied. N consecutive hangs can fill
-    # the default executor pool. We accept this for the short-term fix
-    # because the API stays responsive (this coroutine returns) and the
-    # user can still cancel the URL in the UI. A future PR can move probes
-    # to a subprocess for true cancellation.
+    # probe() shells out to a subprocess (see ytdl._probe_worker), so
+    # subprocess.run's own timeout = socket_timeout + 5 reliably OS-kills
+    # a hung yt-dlp. The asyncio.wait_for here is belt-and-suspenders for
+    # the narrow window between asyncio.to_thread dispatch and subprocess
+    # startup; set it +10s so it always fires AFTER the subprocess timeout.
     try:
         info = await asyncio.wait_for(
             asyncio.to_thread(
@@ -112,7 +105,7 @@ async def post_preview(payload: PreviewRequest, request: Request) -> PreviewResp
                 cookies_browser=cookies,
                 socket_timeout=probe_timeout,
             ),
-            timeout=probe_timeout + 5,
+            timeout=probe_timeout + 10,
         )
     except TimeoutError as exc:
         raise HTTPException(status_code=504, detail=_PROBE_TIMEOUT_DETAIL) from exc
@@ -150,8 +143,10 @@ async def post_enrich(payload: EnrichRequest, request: Request) -> EnrichRespons
 
     async def fetch_one(url: str) -> EnrichedEntry:
         # Per-URL timeout means one slow video doesn't block the whole
-        # batch — the other entries still resolve. Same wait_for caveat
-        # as post_preview: the thread keeps running after wait_for cancels.
+        # batch — the other entries still resolve. probe_one() shells
+        # out to a subprocess, so the timeout actually kills the work
+        # (no leaked executor threads). See post_preview for the wait_for
+        # vs subprocess-timeout layering.
         async with sem:
             try:
                 info = await asyncio.wait_for(
@@ -161,7 +156,7 @@ async def post_enrich(payload: EnrichRequest, request: Request) -> EnrichRespons
                         cookies_browser=cookies,
                         socket_timeout=probe_timeout,
                     ),
-                    timeout=probe_timeout + 5,
+                    timeout=probe_timeout + 10,
                 )
             except TimeoutError:
                 return EnrichedEntry(url=url, error="probe timeout")

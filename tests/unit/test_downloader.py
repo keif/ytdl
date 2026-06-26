@@ -589,66 +589,208 @@ def test_url_targets_a_playlist_malformed_url() -> None:
     assert _url_targets_a_playlist("") is False
 
 
-# ---- probe() must not pass process=False ----
-# yt-dlp's `process=False` returns `_type: url` (a lightweight wrapper
-# that hasn't consulted `noplaylist`), so hybrid `?v=X&list=...` URLs
-# silently come back as single videos even when we want playlist
-# expansion. Lock this in.
+# ---- probe()/probe_one() subprocess pipeline ----
+# probe() and probe_one() shell out to ytdl._probe_worker so the OS can
+# kill a wedged yt-dlp. The asyncio.wait_for backstop in routes_preview
+# can cancel the AWAITER but not the underlying thread, which is how
+# repeated probe hangs filled the executor pool. The tests below verify
+# the wrapper's contract without actually launching a subprocess.
 
 
-def test_probe_does_not_set_process_false() -> None:
-    """probe() must not call extract_info with process=False — that flag
-    short-circuits the playlist extraction and breaks the noplaylist=False
-    path for hybrid URLs."""
-    from unittest.mock import MagicMock, patch
+def _fake_completed(stdout: str = "", stderr: str = "", returncode: int = 0):
+    """Build a CompletedProcess test double for subprocess.run patches."""
+    import subprocess
 
-    with patch("yt_dlp.YoutubeDL") as ydl_cls:
-        ydl_inst = MagicMock()
-        ydl_inst.__enter__ = MagicMock(return_value=ydl_inst)
-        ydl_inst.__exit__ = MagicMock(return_value=False)
-        ydl_inst.extract_info.return_value = {
-            "_type": "playlist",
-            "entries": [],
-        }
-        ydl_cls.return_value = ydl_inst
-
-        from ytdl.downloader import probe
-
-        probe("https://www.youtube.com/watch?v=X&list=PLxyz")
-
-    # extract_info should have been called with download=False, but
-    # crucially NOT with process=False (default True).
-    call = ydl_inst.extract_info.call_args
-    assert call is not None
-    assert call.kwargs.get("process") is not False, (
-        "probe() must not pass process=False — that flag suppresses "
-        "playlist extraction and would re-introduce the hybrid-URL bug"
+    return subprocess.CompletedProcess(
+        args=[], returncode=returncode, stdout=stdout, stderr=stderr
     )
 
 
-def test_probe_one_does_not_set_process_false() -> None:
-    """probe_one() needs the actual per-video metadata (duration,
-    uploader, thumbnail). With process=False, yt-dlp returns a URL
-    stub without any of those fields."""
-    from unittest.mock import MagicMock, patch
+def test_probe_forwards_noplaylist_false_for_hybrid_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hybrid `?v=X&list=PL...` URL must reach the subprocess with
+    noplaylist=False so yt-dlp expands the playlist."""
+    import subprocess as _subprocess
 
-    with patch("yt_dlp.YoutubeDL") as ydl_cls:
-        ydl_inst = MagicMock()
-        ydl_inst.__enter__ = MagicMock(return_value=ydl_inst)
-        ydl_inst.__exit__ = MagicMock(return_value=False)
-        ydl_inst.extract_info.return_value = {
-            "title": "x",
-            "duration": 60,
-        }
-        ydl_cls.return_value = ydl_inst
+    seen: dict = {}
 
-        from ytdl.downloader import probe_one
+    def fake_run(cmd, *, timeout, capture_output, text):
+        # argv[3] is the JSON args blob (sys.executable, -m, module, json).
+        import json as _json
 
-        probe_one("https://www.youtube.com/watch?v=X")
+        seen["argv"] = cmd
+        seen["timeout"] = timeout
+        seen["args_blob"] = _json.loads(cmd[3])
+        return _fake_completed(stdout='{"_type": "playlist", "entries": []}')
 
-    call = ydl_inst.extract_info.call_args
-    assert call is not None
-    assert call.kwargs.get("process") is not False, (
-        "probe_one() must not pass process=False — enrichment fields "
-        "are unavailable in the URL-stub mode"
-    )
+    monkeypatch.setattr(_subprocess, "run", fake_run)
+    from ytdl.downloader import probe
+
+    probe("https://www.youtube.com/watch?v=X&list=PLxyz", socket_timeout=30)
+    assert seen["args_blob"]["opts"]["noplaylist"] is False
+    # extract_flat must stay set so the worker returns flat entry stubs
+    # (not per-video fetches) for upfront listing.
+    assert seen["args_blob"]["opts"]["extract_flat"] == "in_playlist"
+
+
+def test_probe_forwards_noplaylist_true_for_plain_video(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Plain `?v=X` URLs must keep noplaylist=True so yt-dlp's multifeed
+    handling doesn't expand the video into a feed-as-playlist."""
+    import subprocess as _subprocess
+
+    seen: dict = {}
+
+    def fake_run(cmd, *, timeout, capture_output, text):
+        import json as _json
+
+        seen["args_blob"] = _json.loads(cmd[3])
+        return _fake_completed(stdout='{"_type": "video"}')
+
+    monkeypatch.setattr(_subprocess, "run", fake_run)
+    from ytdl.downloader import probe
+
+    probe("https://www.youtube.com/watch?v=abc")
+    assert seen["args_blob"]["opts"]["noplaylist"] is True
+
+
+def test_probe_subprocess_timeout_reraised_as_timeout_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """subprocess.TimeoutExpired must surface as TimeoutError so the
+    route's existing `except TimeoutError` returns 504 unchanged."""
+    import subprocess as _subprocess
+
+    def fake_run(cmd, *, timeout, capture_output, text):
+        raise _subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
+
+    monkeypatch.setattr(_subprocess, "run", fake_run)
+    from ytdl.downloader import probe
+
+    with pytest.raises(TimeoutError) as exc_info:
+        probe("https://yt/x", socket_timeout=2)
+    # Surface the configured deadline so logs make the layering obvious
+    # (socket_timeout + grace).
+    assert "timed out" in str(exc_info.value)
+
+
+def test_probe_nonzero_exit_propagates_structured_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the worker exits non-zero, the JSON error payload on STDOUT
+    must be unpacked and re-raised as RuntimeError. stdout (not stderr)
+    so yt-dlp's own ERROR / WARNING text on stderr can't corrupt the
+    payload."""
+    import subprocess as _subprocess
+
+    def fake_run(cmd, *, timeout, capture_output, text):
+        return _fake_completed(
+            returncode=1,
+            stdout='{"error": "Video unavailable", "type": "yt_dlp_error"}',
+            # Mirror what yt-dlp does on real failure: free-form text on
+            # stderr alongside our structured payload on stdout. The
+            # caller must not be confused by this mixture.
+            stderr="ERROR: [youtube] xxx: Video unavailable\n",
+        )
+
+    monkeypatch.setattr(_subprocess, "run", fake_run)
+    from ytdl.downloader import probe
+
+    with pytest.raises(RuntimeError) as exc_info:
+        probe("https://yt/x")
+    # The structured payload's clean message should surface — NOT a mix
+    # of yt-dlp's stderr text and our JSON.
+    assert str(exc_info.value) == "Video unavailable"
+
+
+def test_probe_nonzero_exit_with_plain_stderr_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If stdout isn't valid JSON (e.g. interpreter crash before our
+    error emitter ran), fall back to stderr text rather than silently
+    swallowing the failure."""
+    import subprocess as _subprocess
+
+    def fake_run(cmd, *, timeout, capture_output, text):
+        return _fake_completed(
+            returncode=2,
+            stdout="",  # nothing on stdout — crashed before _emit_error
+            stderr="Traceback...\nKeyError: x\n",
+        )
+
+    monkeypatch.setattr(_subprocess, "run", fake_run)
+    from ytdl.downloader import probe
+
+    with pytest.raises(RuntimeError) as exc_info:
+        probe("https://yt/x")
+    assert "KeyError" in str(exc_info.value)
+
+
+def test_probe_subprocess_timeout_is_socket_timeout_plus_grace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The subprocess.run timeout must sit ABOVE yt-dlp's socket_timeout
+    so the inner deadline gets a chance to fire first (cleaner error
+    messages). The +5s grace is the documented layering."""
+    import subprocess as _subprocess
+
+    seen: dict = {}
+
+    def fake_run(cmd, *, timeout, capture_output, text):
+        seen["timeout"] = timeout
+        return _fake_completed(stdout="{}")
+
+    monkeypatch.setattr(_subprocess, "run", fake_run)
+    from ytdl.downloader import probe
+
+    probe("https://yt/x", socket_timeout=12)
+    assert seen["timeout"] == 17
+
+
+def test_probe_one_forwards_noplaylist_true(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """probe_one() always passes noplaylist=True — even for hybrid URLs —
+    so enrichment returns the single-video metadata for the entry the
+    caller asked about, not the surrounding playlist."""
+    import subprocess as _subprocess
+
+    seen: dict = {}
+
+    def fake_run(cmd, *, timeout, capture_output, text):
+        import json as _json
+
+        seen["args_blob"] = _json.loads(cmd[3])
+        return _fake_completed(stdout='{"title": "x"}')
+
+    monkeypatch.setattr(_subprocess, "run", fake_run)
+    from ytdl.downloader import probe_one
+
+    probe_one("https://www.youtube.com/watch?v=X&list=PL")
+    assert seen["args_blob"]["opts"]["noplaylist"] is True
+    # probe_one fetches full metadata, so extract_flat must NOT be set.
+    assert "extract_flat" not in seen["args_blob"]["opts"]
+
+
+def test_probe_passes_cookiesfrombrowser_as_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """JSON has no tuple type. Send the cookies arg as a list and let
+    the worker coerce back to tuple before handing to yt-dlp."""
+    import subprocess as _subprocess
+
+    seen: dict = {}
+
+    def fake_run(cmd, *, timeout, capture_output, text):
+        import json as _json
+
+        seen["args_blob"] = _json.loads(cmd[3])
+        return _fake_completed(stdout="{}")
+
+    monkeypatch.setattr(_subprocess, "run", fake_run)
+    from ytdl.downloader import probe
+
+    probe("https://yt/x", cookies_browser="chrome")
+    assert seen["args_blob"]["opts"]["cookiesfrombrowser"] == ["chrome"]

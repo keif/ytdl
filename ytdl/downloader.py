@@ -17,31 +17,29 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 
-def _url_targets_real_playlist(url: str) -> bool:
-    """Return True if the URL points at a user-curated playlist that
-    should be expanded into child jobs.
+def _url_targets_a_playlist(url: str) -> bool:
+    """Return True if the URL carries a `list=` parameter — any list,
+    real playlist or radio mix.
 
-    The default for everything else (plain video URLs, radio mixes,
-    malformed inputs) is False so we set `noplaylist=True` on the probe.
-    That single setting handles three distinct YouTube quirks at once:
-      - radio mixes (`?v=X&list=RDX` auto-redirects) — keep just the
-        video the user pasted, not the synthetic 25-track mix
-      - multifeed / multicamera videos — keep just the single video, not
-        a "playlist" of feeds
-      - plain `?v=X` URLs — just download the video
+    Earlier versions of this function distinguished RD-prefixed (radio
+    mix) lists from PL/OL/etc. (user-curated) lists, treating radio
+    mixes as single-video downloads to protect against YouTube's
+    auto-redirect from `?v=X` to `?v=X&list=RDX`. In practice, users
+    who deliberately grab a radio URL want the mix, and the auto-
+    redirect case is recoverable (paste the bare `?v=X` instead).
+    Letting yt-dlp probe whichever list the URL targets is the
+    less-surprising default; the picker shows the entries and the
+    user picks what they want.
 
-    Returns True only when the URL carries a `list=` parameter whose ID
-    is NOT a radio-mix variant (RD-prefixed). PL, OL, UU, LL, WL, LM,
-    FL, and other curated prefixes pass through.
+    Returns False for URLs with no `list=` parameter so plain video
+    URLs (and multifeed/multicamera videos that yt-dlp would otherwise
+    expand into a "playlist" of feeds) stay single-video.
     """
     try:
         qs = parse_qs(urlparse(url).query)
     except Exception:
         return False
-    list_ids = qs.get("list", [])
-    if not list_ids:
-        return False
-    return not list_ids[0].startswith("RD")
+    return bool(qs.get("list"))
 
 
 class Classification(StrEnum):
@@ -205,16 +203,16 @@ def _build_ydl_options(job, ctx: DownloadContext, throttle: ProgressThrottle) ->
         "concurrent_fragment_downloads": 4,
         # Playlist children carry single-video URLs (the worker extracted
         # them via probe), so noplaylist=True is correct — yt-dlp must not
-        # re-expand them. For top-level jobs, the same RD-vs-other rule
-        # the probe uses applies: protect against radio-mix auto-redirects
-        # and multifeed videos, but let real playlists (PL/OL/etc.) flow
-        # through. Without this branch the CLI's `ytdl get` (which bypasses
-        # the queue) would download only the single video from a hybrid
-        # playlist URL.
+        # re-expand them. For top-level jobs, any URL with a `list=`
+        # parameter expands (real playlist OR radio mix); URLs without a
+        # list stay single-video so multifeed/multicamera videos don't
+        # get treated as a playlist of feeds. Without this branch the
+        # CLI's `ytdl get` (which bypasses the queue) would download
+        # only the single video from a hybrid playlist URL.
         "noplaylist": (
             True
             if job.parent_job_id is not None
-            else not _url_targets_real_playlist(job.url)
+            else not _url_targets_a_playlist(job.url)
         ),
         # yt-dlp 2026.x ships challenge solver scripts (EJS) as opt-in remote
         # components. Without this, YouTube's n-challenge fails and no
@@ -272,12 +270,11 @@ def probe(
     references rather than full per-entry metadata fetches.
 
     `noplaylist` is True by default — yt-dlp uses it as a discriminator
-    for three distinct YouTube quirks: radio-mix auto-redirects
-    (`?v=X&list=RDX`), multifeed/multicamera videos that return as
-    "playlists" of feeds, and plain `?v=X` URLs. The only case where we
-    want it False is when the URL carries a list ID that's clearly a
-    user-curated playlist (`PL`, `OL`, etc.) — see
-    `_url_targets_real_playlist`.
+    for multifeed/multicamera videos that return as "playlists" of
+    feeds, and for plain `?v=X` URLs we want to keep single-video. Any
+    URL with a `list=` parameter (real playlist or radio mix) gets
+    `noplaylist=False` so the probe returns the playlist info and the
+    worker / UI offers the picker. See `_url_targets_a_playlist`.
 
     ``socket_timeout`` bounds yt-dlp's HTTP reads. Without it, certain
     YouTube URLs (e.g. an unavailable video or an anti-bot challenge gone
@@ -291,7 +288,7 @@ def probe(
         "quiet": True,
         "extract_flat": "in_playlist",
         "skip_download": True,
-        "noplaylist": not _url_targets_real_playlist(url),
+        "noplaylist": not _url_targets_a_playlist(url),
         "remote_components": ["ejs:github"],
         "socket_timeout": socket_timeout,
     }

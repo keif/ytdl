@@ -442,6 +442,94 @@ describe("App auto-submit countdown", () => {
     expect(postedBodies.length).toBe(0);
   });
 
+  it("does NOT start countdown when preview flags entry already_downloaded", async () => {
+    previewResponder = () =>
+      jsonResponse({
+        kind: "video",
+        title: null,
+        entries: [
+          {
+            url: "https://yt/x",
+            id: "x",
+            title: "Single Vid",
+            position: 1,
+            already_downloaded: {
+              path: "/data/out/Single Vid [x].mp4",
+              title: "Single Vid",
+            },
+          },
+        ],
+      });
+
+    render(<App />);
+    await waitFor(() => {
+      expect(
+        screen.getByPlaceholderText(/Paste a YouTube URL/i),
+      ).toBeInTheDocument();
+    });
+
+    vi.useFakeTimers();
+    await pasteAndAwaitPreview("https://yt/x");
+
+    // Warning banner is visible (from PreviewVideo) but the auto-submit
+    // countdown status role must NOT appear.
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    // Advance well past the delay window — nothing submits automatically.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    expect(postedBodies.length).toBe(0);
+    // The Force re-download button is what the user has to click to
+    // commit an intentional overwrite.
+    expect(
+      screen.getByRole("button", { name: /Force re-download/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("Force re-download click posts with force_overwrite: true", async () => {
+    previewResponder = () =>
+      jsonResponse({
+        kind: "video",
+        title: null,
+        entries: [
+          {
+            url: "https://yt/x",
+            id: "x",
+            title: "Single Vid",
+            position: 1,
+            already_downloaded: {
+              path: "/data/out/Single Vid [x].mp4",
+              title: "Single Vid",
+            },
+          },
+        ],
+      });
+
+    render(<App />);
+    await waitFor(() => {
+      expect(
+        screen.getByPlaceholderText(/Paste a YouTube URL/i),
+      ).toBeInTheDocument();
+    });
+
+    vi.useFakeTimers();
+    await pasteAndAwaitPreview("https://yt/x");
+
+    const forceBtn = screen.getByRole("button", {
+      name: /Force re-download/i,
+    });
+    await act(async () => {
+      fireEvent.click(forceBtn);
+      await Promise.resolve();
+    });
+
+    expect(postedBodies.length).toBe(1);
+    expect(postedBodies[0]).toMatchObject({
+      url: "https://yt/x",
+      force_overwrite: true,
+    });
+  });
+
   it("manual Download click during countdown does not double-submit", async () => {
     render(<App />);
     await waitFor(() => {

@@ -28,6 +28,7 @@ from ytdl.downloader import (
 )
 from ytdl.downloader import download as default_download
 from ytdl.events_bus import EventsBus
+from ytdl.library import record_downloaded
 from ytdl.models import JobKind, JobStatus
 from ytdl.queue import (
     all_children_terminal,
@@ -582,6 +583,29 @@ class Supervisor:
                 finished_id = finish(
                     conn, job.id, status=JobStatus.DONE, output_path=result.output_path
                 )
+                # Feed the dedup index so a re-queue of the same URL from
+                # the UI catches the duplicate immediately, without waiting
+                # for the next full library rescan. video_id can be absent
+                # on odd sources (livestreams, geo-blocked stubs); guard.
+                if result.video_id and result.output_path:
+                    try:
+                        record_downloaded(
+                            conn,
+                            result.video_id,
+                            result.output_path,
+                            result.title,
+                            result.filesize_bytes,
+                        )
+                    except BaseException as exc:
+                        # Non-fatal — the file was written successfully;
+                        # the next rescan will pick it up. Log so an
+                        # operator triaging "why isn't dedup working"
+                        # sees the write failure.
+                        log.warning(
+                            "library: record_downloaded failed for %s: %s",
+                            job.id,
+                            exc,
+                        )
                 self._bus.publish(
                     {
                         "event": "finished",

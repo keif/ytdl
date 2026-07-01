@@ -300,6 +300,116 @@ def test_preview_succeeds_when_probe_returns_quickly(
     assert body["title"] == "Fast"
 
 
+# --- duplicate detection ---
+
+
+def _seed_library(db_path: Path, video_id: str, path: str, title: str | None = None) -> None:
+    """Insert one row into the library_files index — simulates a rescan
+    having already found this video on disk."""
+    from ytdl.db import connect, migrate
+    from ytdl.library import record_downloaded
+
+    conn = connect(db_path)
+    try:
+        migrate(conn)
+        record_downloaded(conn, video_id, path, title, None)
+    finally:
+        conn.close()
+
+
+def test_preview_marks_entry_already_downloaded_when_indexed(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """When the previewed video's id is in library_files, the entry's
+    already_downloaded field carries the path + title so the UI can render
+    the warning banner."""
+    _seed_library(
+        tmp_path / "ytdl.db",
+        "abc12345678",
+        "/data/out/Foo [abc12345678].mp4",
+        "Foo",
+    )
+    _patch_probe(
+        monkeypatch,
+        {
+            "_type": "video",
+            "title": "Foo",
+            "id": "abc12345678",
+            "webpage_url": "https://youtu.be/abc12345678",
+        },
+    )
+    r = client.post(
+        "/preview", json={"url": "https://youtu.be/abc12345678"}
+    )
+    assert r.status_code == 200
+    entry = r.json()["entries"][0]
+    assert entry["already_downloaded"] is not None
+    assert entry["already_downloaded"]["path"] == "/data/out/Foo [abc12345678].mp4"
+    assert entry["already_downloaded"]["title"] == "Foo"
+
+
+def test_preview_omits_already_downloaded_when_not_indexed(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No library row => the field is None (present in the schema, but
+    null so the UI's `entry.already_downloaded` check is falsy)."""
+    _patch_probe(
+        monkeypatch,
+        {
+            "_type": "video",
+            "title": "Fresh",
+            "id": "zzz99999999",
+            "webpage_url": "https://youtu.be/zzz99999999",
+        },
+    )
+    r = client.post(
+        "/preview", json={"url": "https://youtu.be/zzz99999999"}
+    )
+    entry = r.json()["entries"][0]
+    assert entry["already_downloaded"] is None
+
+
+def test_preview_playlist_marks_only_duplicate_entries(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A playlist preview annotates each duplicate entry independently —
+    entries not in the library keep already_downloaded=None."""
+    _seed_library(
+        tmp_path / "ytdl.db",
+        "bbb22222222",
+        "/data/out/Beta [bbb22222222].mp4",
+        "Beta",
+    )
+    _patch_probe(
+        monkeypatch,
+        {
+            "_type": "playlist",
+            "title": "Mix",
+            "entries": [
+                {
+                    "id": "aaa11111111",
+                    "title": "Alpha",
+                    "webpage_url": "https://yt.example/v/aaa11111111",
+                },
+                {
+                    "id": "bbb22222222",
+                    "title": "Beta",
+                    "webpage_url": "https://yt.example/v/bbb22222222",
+                },
+            ],
+        },
+    )
+    r = client.post("/preview", json={"url": "https://yt.example/list"})
+    body = r.json()
+    by_id = {e["id"]: e for e in body["entries"]}
+    assert by_id["aaa11111111"]["already_downloaded"] is None
+    assert by_id["bbb22222222"]["already_downloaded"] is not None
+    assert (
+        by_id["bbb22222222"]["already_downloaded"]["path"]
+        == "/data/out/Beta [bbb22222222].mp4"
+    )
+
+
 def test_enrich_marks_per_url_timeout_without_failing_batch(
     fast_timeout_client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

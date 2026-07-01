@@ -38,6 +38,11 @@ class JobCreate(BaseModel):
     # Tilde expansion happens server-side. Validated for writability before
     # the job is enqueued — see routes_jobs.post_job.
     output_dir: str | None = Field(default=None, min_length=1, max_length=4096)
+    # When True, bypass the duplicate-detection check that would otherwise
+    # return 409 for a URL whose video_id is already in the library. Also
+    # propagates to the job row so yt-dlp overwrites an existing output
+    # file on disk (same knob the /redownload endpoint uses).
+    force_overwrite: bool = False
 
     @field_validator("url")
     @classmethod

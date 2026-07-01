@@ -5,6 +5,8 @@ Lifespan starts the worker supervisor unless workers=0 (test mode).
 """
 from __future__ import annotations
 
+import asyncio
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -13,6 +15,8 @@ from fastapi import FastAPI
 from ytdl.config import Config
 from ytdl.db import connect, migrate
 from ytdl.events_bus import EventsBus
+
+log = logging.getLogger(__name__)
 
 
 def build_app(config: Config) -> FastAPI:
@@ -43,9 +47,24 @@ def build_app(config: Config) -> FastAPI:
             app.state.supervisor = supervisor
         else:
             app.state.supervisor = None
+        # Startup dedup scan runs in the background so ASGI startup isn't
+        # blocked by a large library. The task result is logged for
+        # operators; failure is non-fatal — the /library/rescan endpoint
+        # is available as a manual retry.
+        rescan_task: asyncio.Task | None = None
+        if config.dedup_enabled:
+            rescan_task = asyncio.create_task(
+                _initial_library_scan(config), name="ytdl.library.initial_scan"
+            )
         try:
             yield
         finally:
+            if rescan_task and not rescan_task.done():
+                rescan_task.cancel()
+                try:
+                    await rescan_task
+                except (asyncio.CancelledError, Exception):
+                    pass
             if supervisor:
                 await supervisor.stop()
 
@@ -102,6 +121,13 @@ def build_app(config: Config) -> FastAPI:
             # returns a 504. Configurable via YTDL_PROBE_TIMEOUT_S or the
             # probe_timeout_s TOML key.
             "probe_timeout_s": cfg.probe_timeout_s,
+            # Duplicate-detection surface. A future settings panel renders
+            # both of these; today the UI just uses them to know the
+            # feature is on. Empty ``library_scan_dirs`` means "server
+            # falls back to (output_dir,)" — we resolve the fallback here
+            # so the client sees the actual list that gets scanned.
+            "library_scan_dirs": list(cfg.resolve_library_scan_dirs()),
+            "dedup_enabled": cfg.dedup_enabled,
         }
 
     # Serve the built Vite bundle when present. The Dockerfile copies the
@@ -125,3 +151,37 @@ def _load_runtime_config() -> Config:
 
 def app_factory() -> FastAPI:
     return build_app(_load_runtime_config())
+
+
+async def _initial_library_scan(config: Config) -> None:
+    """Kick off a fire-and-forget scan of the configured library dirs.
+
+    Runs in a worker thread so a large tree doesn't monopolize the loop.
+    Logs the outcome — good enough for operators; the /library/rescan
+    endpoint exists for surfacing failures to the UI on demand.
+    """
+    from ytdl.library import scan_directories
+
+    dirs = list(config.resolve_library_scan_dirs())
+    db_path = config.db_path
+
+    def _run() -> tuple[int, list[str], float]:
+        conn = connect(db_path)
+        try:
+            migrate(conn)
+            return scan_directories(conn, dirs)
+        finally:
+            conn.close()
+
+    try:
+        count, scanned, elapsed = await asyncio.to_thread(_run)
+        log.info(
+            "library: initial scan indexed %d file(s) across %d dir(s) in %.2fs",
+            count,
+            len(scanned),
+            elapsed,
+        )
+    except asyncio.CancelledError:
+        raise
+    except BaseException as exc:
+        log.warning("library: initial scan failed: %s", exc)

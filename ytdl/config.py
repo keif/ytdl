@@ -56,6 +56,31 @@ class Config:
     # A normal probe takes 1-3s; 30s is the "something is very wrong" cliff.
     # See downloader.probe / routes_preview / ytdl._probe_worker.
     probe_timeout_s: int = 30
+    # Directories that ytdl.library.scan_directories walks to build the
+    # duplicate-detection index. Empty tuple = fall back to (output_dir,) so
+    # a fresh install with no explicit config still gets duplicate detection
+    # against the queue's own downloads. Users with media on separate mounts
+    # (e.g., an NFS-mounted Plex library) can list additional roots here.
+    # Tilde expansion happens server-side at load time.
+    # Env: YTDL_LIBRARY_SCAN_DIRS (comma-separated).
+    # TOML: library_scan_dirs = ["/mnt/media/videos", "..."]
+    library_scan_dirs: tuple[str, ...] = ()
+    # Feature flag for duplicate detection. When False, the /library/rescan
+    # endpoint still works but the /preview and /jobs paths skip lookup /
+    # 409-on-duplicate behavior. Lets a user who doesn't want the flow opt
+    # out globally without emptying library_scan_dirs.
+    dedup_enabled: bool = True
+
+    def resolve_library_scan_dirs(self) -> tuple[str, ...]:
+        """Return the scan-dir list, falling back to (output_dir,) when unset.
+
+        Empty tuple is the sentinel for "no explicit config", not "scan
+        nothing" — that avoids a footgun where a fresh install would index
+        zero files and never warn on duplicates.
+        """
+        if self.library_scan_dirs:
+            return self.library_scan_dirs
+        return (str(self.output_dir),)
 
 
 def _default_output_dir() -> Path:
@@ -155,7 +180,33 @@ def _env_overrides() -> dict:
             raise ValueError(
                 f"invalid YTDL_PROBE_TIMEOUT_S={v!r}: must be an integer"
             ) from exc
+    if v := os.environ.get("YTDL_LIBRARY_SCAN_DIRS"):
+        parsed_dirs = _parse_library_scan_dirs_env(v)
+        # Only override when there's at least one non-empty entry after
+        # trimming — an env of just "," or " " shouldn't wipe the TOML.
+        if parsed_dirs:
+            out["library_scan_dirs"] = parsed_dirs
+    if v := os.environ.get("YTDL_DEDUP_ENABLED"):
+        out["dedup_enabled"] = _coerce_bool(v)
     return out
+
+
+def _parse_library_scan_dirs_env(raw: str) -> list[str]:
+    """Split a comma-separated env value into a list of directory paths.
+
+    Strips whitespace, drops empties, expands ``~`` server-side so operators
+    can write ``~/Videos`` in the env and have it resolve against HOME.
+    Preserves order and dedupes so a typo'd duplicate doesn't double-scan.
+    """
+    seen: list[str] = []
+    for token in raw.split(","):
+        t = token.strip()
+        if not t:
+            continue
+        expanded = str(Path(t).expanduser())
+        if expanded not in seen:
+            seen.append(expanded)
+    return seen
 
 
 def load_config() -> Config:
@@ -210,6 +261,26 @@ def load_config() -> Config:
         ) from exc
     if probe_timeout_s < 1:
         raise ValueError("probe_timeout_s must be >= 1")
+    # library_scan_dirs: TOML may be a list of strings; env parsing already
+    # produced a list. Both go through the same normalizer so leading/
+    # trailing whitespace, tilde expansion, and dedup behave identically no
+    # matter how the config was supplied. An unset value stays as ``()`` so
+    # ``Config.resolve_library_scan_dirs`` falls back to ``(output_dir,)``.
+    raw_scan_dirs = raw.get("library_scan_dirs")
+    library_scan_dirs: tuple[str, ...] = ()
+    if isinstance(raw_scan_dirs, list):
+        clean: list[str] = []
+        for entry in raw_scan_dirs:
+            if not isinstance(entry, str):
+                continue
+            t = entry.strip()
+            if not t:
+                continue
+            expanded = str(Path(t).expanduser())
+            if expanded not in clean:
+                clean.append(expanded)
+        library_scan_dirs = tuple(clean)
+    dedup_enabled = bool(raw.get("dedup_enabled", True))
     return Config(
         output_dir=Path(raw.get("output_dir", _default_output_dir())),
         db_path=Path(raw.get("db_path", _default_db_path())),
@@ -222,4 +293,6 @@ def load_config() -> Config:
         subtitle_langs=tuple(subtitle_langs),
         autosubmit_delay_s=autosubmit_delay_s,
         probe_timeout_s=probe_timeout_s,
+        library_scan_dirs=library_scan_dirs,
+        dedup_enabled=dedup_enabled,
     )

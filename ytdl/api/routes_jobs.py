@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from ytdl.api.schemas import JobCreate, JobList, JobOut
 from ytdl.db import connect, migrate
+from ytdl.library import extract_video_id_from_url, lookup_by_video_id
 from ytdl.models import Job, JobKind, JobStatus
 from ytdl.queue import (
     cancel_with_children,
@@ -125,8 +126,40 @@ def post_job(payload: JobCreate, request: Request) -> JobOut:
         if payload.subtitles is not None
         else cfg.subtitles_default
     )
+    force_overwrite = bool(payload.force_overwrite)
+    dedup_enabled = getattr(cfg, "dedup_enabled", True)
     conn = _conn(request)
     try:
+        # Duplicate detection runs BEFORE the enqueue so a rejected job
+        # never touches the queue at all. Only runs on the "trusted URL
+        # shape" path — a URL we can't parse locally falls back to just
+        # letting the download start (the probe path will surface the
+        # actual duplicate at run time). force_overwrite bypasses.
+        if dedup_enabled and not force_overwrite:
+            candidate_urls: list[str] = []
+            if payload.url is not None:
+                candidate_urls = [payload.url]
+            elif payload.urls is not None:
+                candidate_urls = list(payload.urls)
+            for candidate in candidate_urls:
+                vid = extract_video_id_from_url(candidate)
+                if vid is None:
+                    continue
+                hit = lookup_by_video_id(conn, vid)
+                if hit is not None:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "code": "duplicate",
+                            "url": candidate,
+                            "path": hit["path"],
+                            "hint": (
+                                "Set force_overwrite=true to download "
+                                "anyway, or delete the existing file."
+                            ),
+                        },
+                    )
+
         if payload.url is not None:
             job_id = enqueue(
                 conn,
@@ -135,6 +168,7 @@ def post_job(payload: JobCreate, request: Request) -> JobOut:
                 format_pref=fmt,
                 output_dir=out_dir,
                 subtitles=subs,
+                force_overwrite=force_overwrite,
             )
         else:
             # Picked subset from a playlist preview. Each URL becomes its own
@@ -154,6 +188,7 @@ def post_job(payload: JobCreate, request: Request) -> JobOut:
                         format_pref=fmt,
                         output_dir=out_dir,
                         subtitles=subs,
+                        force_overwrite=force_overwrite,
                     )
                     if first_id is None:
                         first_id = job_id

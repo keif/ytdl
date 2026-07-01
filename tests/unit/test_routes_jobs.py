@@ -629,6 +629,30 @@ def test_post_jobs_unrecognized_url_shape_skips_dedup_check(
     assert r.status_code == 201
 
 
+def test_post_jobs_playlist_url_skips_single_video_dedup_check(
+    client: TestClient,
+) -> None:
+    """A URL with `list=PL...` targets a playlist. The pre-enqueue check
+    extracts the anchor `v=` id, but the worker will expand the URL into
+    all playlist entries — blocking on the anchor being a duplicate
+    would prevent queueing the whole playlist. Codex-caught: the picker
+    flow already handles per-entry dedup at the UI level; direct submit
+    of a playlist URL should skip the single-video check entirely."""
+    db = client.app.state.config.db_path
+    # Seed the anchor video as an existing duplicate.
+    _seed_library_row(db, "abcVIDEO1234", "/data/out/anchor.mp4", None)
+
+    # The playlist URL uses that anchor as `?v=` but the intent is the
+    # whole playlist. Must accept (201), NOT reject (409).
+    r = client.post(
+        "/jobs",
+        json={"url": "https://www.youtube.com/watch?v=abcVIDEO1234&list=PLxyz"},
+    )
+    assert r.status_code == 201, (
+        f"expected 201 (playlist enqueue proceeds), got {r.status_code}: {r.text}"
+    )
+
+
 def test_post_jobs_duplicate_check_disabled_when_dedup_off(
     tmp_path: Path,
 ) -> None:

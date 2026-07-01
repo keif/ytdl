@@ -141,7 +141,19 @@ def post_job(payload: JobCreate, request: Request) -> JobOut:
                 candidate_urls = [payload.url]
             elif payload.urls is not None:
                 candidate_urls = list(payload.urls)
+            from ytdl.downloader import _url_targets_a_playlist
             for candidate in candidate_urls:
+                # Skip dedup for playlist URLs. A `?v=X&list=PL...` URL
+                # gets its anchor video extracted by extract_video_id,
+                # but the WORKER will expand it into a playlist of many
+                # children — the user isn't asking to download just X.
+                # Rejecting on X's presence would block queueing the
+                # rest of the playlist unless the client toggled
+                # force_overwrite, which would then overwrite ALL
+                # children indiscriminately. The picker flow already
+                # handles per-entry dedup at the UI level.
+                if _url_targets_a_playlist(candidate):
+                    continue
                 vid = extract_video_id_from_url(candidate)
                 if vid is None:
                     continue

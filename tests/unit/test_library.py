@@ -220,6 +220,63 @@ def test_scan_removes_row_when_file_deleted_from_scanned_dir(tmp_path: Path) -> 
     assert lookup_by_video_id(conn, "aaa11111111") is not None
 
 
+def test_scan_root_with_underscore_does_not_delete_unrelated_rows(tmp_path: Path) -> None:
+    """SQLite LIKE treats `_` and `%` as wildcards. Without escaping,
+    a scan root like `/media/lib_1` would match `/media/libX1` and
+    delete rows there when it shouldn't. Locks down the ESCAPE fix."""
+    root_underscore = tmp_path / "lib_1"
+    root_similar = tmp_path / "libX1"
+    root_underscore.mkdir()
+    root_similar.mkdir()
+    (root_underscore / "InUnderscore [aaa11111111].mp4").write_bytes(b"x")
+    (root_similar / "InSimilar [bbb22222222].mp4").write_bytes(b"x")
+
+    conn = _make_conn(tmp_path)
+    # Index both dirs first.
+    scan_directories(conn, [str(root_underscore), str(root_similar)])
+    assert lookup_by_video_id(conn, "aaa11111111") is not None
+    assert lookup_by_video_id(conn, "bbb22222222") is not None
+
+    # Rescan ONLY `lib_1`. The row under `libX1` must not be deleted
+    # even though `_` would wildcard-match without ESCAPE.
+    scan_directories(conn, [str(root_underscore)])
+    assert lookup_by_video_id(conn, "aaa11111111") is not None
+    assert lookup_by_video_id(conn, "bbb22222222") is not None, (
+        "row under libX1 was clobbered by unescaped LIKE on lib_1"
+    )
+
+
+def test_record_downloaded_stores_canonical_path(tmp_path: Path) -> None:
+    """When record_downloaded receives a symlink-prefixed path, it must
+    resolve to the canonical form so rescan cleanup sees a comparable
+    prefix. Otherwise the row under the symlink prefix survives a
+    rescan and keeps producing false-duplicate 409s."""
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "linked"
+    try:
+        link.symlink_to(real)
+    except OSError:
+        import pytest
+        pytest.skip("filesystem doesn't support symlinks")
+
+    conn = _make_conn(tmp_path)
+    # Simulate yt-dlp writing via the symlink path.
+    (real / "Foo [ccc33333333].mp4").write_bytes(b"x")
+    record_downloaded(
+        conn,
+        video_id="ccc33333333",
+        path=str(link / "Foo [ccc33333333].mp4"),
+        title="Foo",
+        filesize_bytes=1,
+    )
+    hit = lookup_by_video_id(conn, "ccc33333333")
+    assert hit is not None
+    # Stored path is the canonical (resolved) form, not the symlink form.
+    assert str(real) in hit["path"]
+    assert str(link) not in hit["path"]
+
+
 def test_scan_preserves_rows_under_unscanned_roots(tmp_path: Path) -> None:
     """A rescan that only covers a subset of the config's scan_dirs must
     NOT clobber rows indexed from other roots. Otherwise a partial

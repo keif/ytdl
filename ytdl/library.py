@@ -185,9 +185,19 @@ def scan_directories(
         # doesn't accidentally match `/media/abc-videos/...`.
         for root in resolved:
             root_prefix = root if root.endswith("/") else root + "/"
+            # SQLite LIKE treats `%` and `_` as wildcards; a scan root
+            # containing either (e.g. `/media/lib_1`) would match
+            # unrelated paths (`/media/libX1`) and delete them. Escape
+            # both plus the escape char itself, then use `ESCAPE '\\'`.
+            escaped_prefix = (
+                root_prefix.replace("\\", "\\\\")
+                .replace("%", "\\%")
+                .replace("_", "\\_")
+            )
             existing = conn.execute(
-                "SELECT video_id, path FROM library_files WHERE path LIKE ? || '%'",
-                (root_prefix,),
+                "SELECT video_id, path FROM library_files "
+                "WHERE path LIKE ? || '%' ESCAPE '\\'",
+                (escaped_prefix,),
             ).fetchall()
             for existing_row in existing:
                 vid = (
@@ -270,6 +280,16 @@ def record_downloaded(
     """
     if not video_id:
         return
+    # Canonicalize the path so it's comparable with scan_directories'
+    # resolved roots. Otherwise, when output_dir is a symlink (e.g.
+    # /mnt/plex -> /var/media), yt-dlp writes /mnt/plex/foo but the
+    # scan resolves roots to /var/media/ — a subsequent rescan's
+    # stale-row check would miss the /mnt/plex/-prefixed row and
+    # leave it in place after the file was deleted.
+    try:
+        canonical_path = str(Path(path).resolve())
+    except (OSError, RuntimeError):
+        canonical_path = path
     conn.execute(
         """
         INSERT INTO library_files(video_id, path, title, filesize_bytes, scanned_at)
@@ -280,5 +300,5 @@ def record_downloaded(
             filesize_bytes = COALESCE(excluded.filesize_bytes, filesize_bytes),
             scanned_at = excluded.scanned_at
         """,
-        (video_id, path, title, filesize_bytes, int(time.time() * 1000)),
+        (video_id, canonical_path, title, filesize_bytes, int(time.time() * 1000)),
     )

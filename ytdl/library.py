@@ -172,10 +172,34 @@ def scan_directories(
 
     now_ms = int(time.time() * 1000)
     # Wrap the writes so a mid-scan interrupt doesn't leave the table
-    # half-populated. ``INSERT OR REPLACE`` idempotency covers rescans
-    # after moves.
+    # half-populated. Delete rows under the scanned roots that we DIDN'T
+    # see this pass — the 409 hint says "delete the existing file, or
+    # set force_overwrite", so a rescan after deletion must actually
+    # clear the row. Rows under unscanned roots are left alone (this
+    # rescan didn't cover them; don't clobber their state).
     conn.execute("BEGIN IMMEDIATE")
     try:
+        # Load existing rows under any of the scanned roots. For each,
+        # if its video_id isn't in `seen`, delete it. Comparing against
+        # `path LIKE '<root>/%'` (with trailing separator) so `/media/a`
+        # doesn't accidentally match `/media/abc-videos/...`.
+        for root in resolved:
+            root_prefix = root if root.endswith("/") else root + "/"
+            existing = conn.execute(
+                "SELECT video_id, path FROM library_files WHERE path LIKE ? || '%'",
+                (root_prefix,),
+            ).fetchall()
+            for existing_row in existing:
+                vid = (
+                    existing_row["video_id"]
+                    if isinstance(existing_row, sqlite3.Row)
+                    else existing_row[0]
+                )
+                if vid not in seen:
+                    conn.execute(
+                        "DELETE FROM library_files WHERE video_id = ?",
+                        (vid,),
+                    )
         for vid, (path, title, size) in seen.items():
             conn.execute(
                 """

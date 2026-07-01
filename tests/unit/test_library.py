@@ -192,6 +192,57 @@ def test_scan_directories_updates_row_when_file_moves(tmp_path: Path) -> None:
     assert str(lib_b) in hit2["path"]
 
 
+def test_scan_removes_row_when_file_deleted_from_scanned_dir(tmp_path: Path) -> None:
+    """The 409 hint says 'delete the existing file' — rescan must
+    honor that by removing rows whose files no longer exist under the
+    scanned roots."""
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    keep = lib / "Keep [aaa11111111].mp4"
+    goner = lib / "Goner [bbb22222222].mp4"
+    keep.write_bytes(b"x")
+    goner.write_bytes(b"x")
+
+    conn = _make_conn(tmp_path)
+    count1, _, _ = scan_directories(conn, [str(lib)])
+    assert count1 == 2
+    assert lookup_by_video_id(conn, "bbb22222222") is not None
+
+    # Simulate the user deleting the duplicate file the 409 hint
+    # told them to delete.
+    goner.unlink()
+
+    count2, _, _ = scan_directories(conn, [str(lib)])
+    assert count2 == 1
+    # Deleted file's row is GONE — /jobs won't false-positive on it now.
+    assert lookup_by_video_id(conn, "bbb22222222") is None
+    # The other row stays.
+    assert lookup_by_video_id(conn, "aaa11111111") is not None
+
+
+def test_scan_preserves_rows_under_unscanned_roots(tmp_path: Path) -> None:
+    """A rescan that only covers a subset of the config's scan_dirs must
+    NOT clobber rows indexed from other roots. Otherwise a partial
+    /library/rescan (e.g. an operator rescanning one specific mount)
+    would wipe rows from mounts they DIDN'T rescan."""
+    root_a = tmp_path / "A"
+    root_b = tmp_path / "B"
+    root_a.mkdir()
+    root_b.mkdir()
+    (root_a / "InA [aaa11111111].mp4").write_bytes(b"x")
+    (root_b / "InB [bbb22222222].mp4").write_bytes(b"x")
+
+    conn = _make_conn(tmp_path)
+    scan_directories(conn, [str(root_a), str(root_b)])
+    assert lookup_by_video_id(conn, "aaa11111111") is not None
+    assert lookup_by_video_id(conn, "bbb22222222") is not None
+
+    # Rescan ONLY A. B's row must stay put.
+    scan_directories(conn, [str(root_a)])
+    assert lookup_by_video_id(conn, "aaa11111111") is not None
+    assert lookup_by_video_id(conn, "bbb22222222") is not None
+
+
 def test_lookup_by_video_id_returns_none_when_absent(tmp_path: Path) -> None:
     conn = _make_conn(tmp_path)
     assert lookup_by_video_id(conn, "abc12345678") is None

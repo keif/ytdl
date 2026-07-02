@@ -653,6 +653,34 @@ def test_post_jobs_playlist_url_skips_single_video_dedup_check(
     )
 
 
+def test_post_jobs_urls_batch_checks_dedup_even_when_url_has_list_param(
+    client: TestClient,
+) -> None:
+    """The urls[] branch is the picker submitting a chosen subset. Each
+    URL is a picked video, even if it carries `&list=...` params from
+    the address bar. Codex-caught: the earlier fix skipped playlist-
+    shaped URLs entirely, which meant a duplicate picked entry with
+    `list=...` slipped through. The single-URL branch still skips
+    playlist shapes (that's the top-level playlist submit case)."""
+    db = client.app.state.config.db_path
+    _seed_library_row(db, "pickedDUP12", "/data/out/existing.mp4", None)
+
+    # Picker-style submit — urls[] batch. The picked video happens to
+    # carry a list= param. Must return 409, NOT 201.
+    r = client.post(
+        "/jobs",
+        json={
+            "urls": [
+                "https://www.youtube.com/watch?v=pickedDUP12&list=PLxyz"
+            ],
+        },
+    )
+    assert r.status_code == 409, (
+        f"expected 409 (picked video is a duplicate), "
+        f"got {r.status_code}: {r.text}"
+    )
+
+
 def test_post_jobs_duplicate_check_disabled_when_dedup_off(
     tmp_path: Path,
 ) -> None:

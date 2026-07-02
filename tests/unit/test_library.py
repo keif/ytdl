@@ -196,6 +196,7 @@ def test_scan_removes_row_when_file_deleted_from_scanned_dir(tmp_path: Path) -> 
     """The 409 hint says 'delete the existing file' — rescan must
     honor that by removing rows whose files no longer exist under the
     scanned roots."""
+    import time
     lib = tmp_path / "lib"
     lib.mkdir()
     keep = lib / "Keep [aaa11111111].mp4"
@@ -211,6 +212,12 @@ def test_scan_removes_row_when_file_deleted_from_scanned_dir(tmp_path: Path) -> 
     # Simulate the user deleting the duplicate file the 409 hint
     # told them to delete.
     goner.unlink()
+
+    # Sleep long enough that the second scan's scan_start_ms is strictly
+    # greater than the first scan's scanned_at. The timestamp guard
+    # deletes rows only when scanned_at < scan_start_ms, so scans must
+    # be temporally distinguishable.
+    time.sleep(0.005)
 
     count2, _, _ = scan_directories(conn, [str(lib)])
     assert count2 == 1
@@ -243,6 +250,56 @@ def test_scan_root_with_underscore_does_not_delete_unrelated_rows(tmp_path: Path
     assert lookup_by_video_id(conn, "aaa11111111") is not None
     assert lookup_by_video_id(conn, "bbb22222222") is not None, (
         "row under libX1 was clobbered by unescaped LIKE on lib_1"
+    )
+
+
+def test_scan_preserves_rows_written_mid_scan(tmp_path: Path) -> None:
+    """A concurrent worker call to record_downloaded() during a scan
+    stamps scanned_at = now (>= scan_start_ms). Without the timestamp
+    guard, cleanup would delete the fresh row because it's not in the
+    walk's `seen` set.
+
+    Simulate by directly writing a row whose scanned_at is guaranteed
+    to be in the future (relative to the next scan) — this validates
+    the guard's `<` semantics regardless of test-runner timing.
+    """
+    from pathlib import Path as _P
+
+    from ytdl.library import scan_directories
+
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    (lib / "Existing [existing1111].mp4").write_bytes(b"x")
+
+    conn = _make_conn(tmp_path)
+
+    # Directly seed a row with scanned_at set to a time FAR in the
+    # future. Simulates a record_downloaded call that ran mid-scan
+    # (its `now` is later than the scan_start_ms). The path is under
+    # `lib/` and the video_id won't be in `seen` (no matching file on
+    # disk), so the pre-fix cleanup would delete this row.
+    future_ms = 10_000_000_000_000  # year 2286-ish
+    conn.execute(
+        """
+        INSERT INTO library_files(video_id, path, title, filesize_bytes, scanned_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            "fresh1111111",
+            str(_P(lib) / "Fresh [fresh1111111].mp4"),
+            "Fresh",
+            1,
+            future_ms,
+        ),
+    )
+    conn.commit()
+
+    # Rescan — the timestamp guard protects rows with scanned_at
+    # >= scan_start_ms. `future_ms` >> now so the fresh row survives.
+    scan_directories(conn, [str(lib)])
+    assert lookup_by_video_id(conn, "fresh1111111") is not None, (
+        "fresh row (written mid-scan by concurrent worker) was clobbered "
+        "by rescan cleanup"
     )
 
 

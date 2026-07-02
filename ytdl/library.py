@@ -126,6 +126,12 @@ def scan_directories(
     user only cares that SOME copy exists, not which mirror.
     """
     start = time.time()
+    # Capture the scan-start timestamp so the stale-row cleanup can
+    # protect rows written DURING the scan (e.g. a worker calling
+    # record_downloaded() while we were mid-walk). Without this guard,
+    # a fresh row written after the walk finished but before the
+    # cleanup ran would get deleted because it wasn't in `seen`.
+    scan_start_ms = int(start * 1000)
     resolved: list[str] = []
     seen: dict[str, tuple[str, str | None, int | None]] = {}
 
@@ -191,10 +197,14 @@ def scan_directories(
             # or `/media/lib_1` (wildcard). Use substr() for an exact
             # byte-for-byte prefix comparison — no wildcards, always
             # case-sensitive.
+            # `scanned_at < ?` protects rows written by concurrent
+            # record_downloaded() calls DURING this scan (worker
+            # finishing a download while we were walking the tree).
+            # Those rows carry scanned_at >= scan_start_ms and survive.
             existing = conn.execute(
                 "SELECT video_id, path FROM library_files "
-                "WHERE substr(path, 1, ?) = ?",
-                (len(root_prefix), root_prefix),
+                "WHERE substr(path, 1, ?) = ? AND scanned_at < ?",
+                (len(root_prefix), root_prefix, scan_start_ms),
             ).fetchall()
             for existing_row in existing:
                 vid = (

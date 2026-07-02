@@ -89,9 +89,9 @@ export default function App() {
   // window, we want the LATEST submit handler, not a stale one. The ref is
   // refreshed on every render below so the timer's tick handler dereferences
   // the freshest function.
-  const submitSingleRef = useRef<(entryUrl: string) => Promise<void>>(
-    async () => {},
-  );
+  const submitSingleRef = useRef<
+    (entryUrl: string, opts?: { force_overwrite?: boolean }) => Promise<void>
+  >(async () => {});
 
   const previewDebounce = useRef<number | null>(null);
   const previewAbort = useRef<AbortController | null>(null);
@@ -381,7 +381,10 @@ export default function App() {
     return undefined;
   }
 
-  async function submitSingle(entryUrl: string) {
+  async function submitSingle(
+    entryUrl: string,
+    opts?: { force_overwrite?: boolean },
+  ) {
     // Stop any in-flight auto-submit countdown the moment a manual
     // submit begins. Without this, a Download click near the end of
     // the window can race the timer tick: both call submitSingle and
@@ -442,7 +445,13 @@ export default function App() {
     // that case would let the user retry from the form and double-enqueue.
     let postFailed = false;
     try {
-      await createJob(entryUrl, effectiveFormat, effectiveSubs, effectiveOutputDir);
+      await createJob(
+        entryUrl,
+        effectiveFormat,
+        effectiveSubs,
+        effectiveOutputDir,
+        opts?.force_overwrite ? { force_overwrite: true } : undefined,
+      );
     } catch (e) {
       postFailed = true;
       // Only show the error AND restore the form if the user is still
@@ -477,11 +486,22 @@ export default function App() {
     try {
       const effectiveFormat = audioOnly ? "audio_only" : format;
       const effectiveOutputDir = outputDir.trim() || undefined;
+      // If any selected URL is flagged as already-downloaded in the current
+      // preview, the user has explicitly opted in to re-fetching it (they
+      // toggled "Include already-downloaded" or manually re-checked the
+      // box). Pass force_overwrite so the server's 409 check doesn't
+      // reject the batch — otherwise a single duplicate would fail the
+      // whole submit.
+      const selectedSet = new Set(urls);
+      const anyDuplicate = ready?.entries.some(
+        (e) => selectedSet.has(e.url) && e.already_downloaded,
+      );
       await createJobsFromPick(
         urls,
         effectiveFormat,
         effectiveSubtitles(),
         effectiveOutputDir,
+        anyDuplicate ? { force_overwrite: true } : undefined,
       );
       updateUrl("");
       setAudioOnly(false);
@@ -527,7 +547,16 @@ export default function App() {
     // user clicks Download, the manual POST is mid-flight, then /status
     // arrives and re-fires this effect — without the guard, a new timer
     // would race the manual submit and enqueue the same URL twice.
-    if (!singleEntry || delay <= 0 || submitting) {
+    //
+    // Duplicate suppression: if the entry is already in the library, the
+    // tool must never silently re-fetch it. The user has to click
+    // Force re-download explicitly.
+    if (
+      !singleEntry ||
+      delay <= 0 ||
+      submitting ||
+      singleEntry.already_downloaded
+    ) {
       if (autoSubmit !== null) setAutoSubmit(null);
       return;
     }
@@ -746,7 +775,14 @@ export default function App() {
           entry={singleEntry}
           enriched={singleEnriched ?? undefined}
           format={audioOnly ? "audio_only" : format}
-          onDownload={() => submitSingle(singleEntry.url)}
+          onDownload={() =>
+            submitSingle(
+              singleEntry.url,
+              singleEntry.already_downloaded
+                ? { force_overwrite: true }
+                : undefined,
+            )
+          }
           busy={submitting}
         />
       )}

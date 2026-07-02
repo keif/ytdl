@@ -94,4 +94,74 @@ describe("PreviewVideo", () => {
     const matches = screen.getAllByText("https://yt/abc");
     expect(matches.length).toBeGreaterThan(0);
   });
+
+  it("renders the already-downloaded warning banner with the path", () => {
+    render(
+      <PreviewVideo
+        entry={{
+          ...baseEntry,
+          already_downloaded: {
+            path: "/data/out/My Video [abc12345678].mp4",
+            title: "My Video",
+          },
+        }}
+        format="best"
+        onDownload={async () => {}}
+        busy={false}
+      />,
+    );
+    const banner = screen.getByRole("alert");
+    expect(banner).toHaveTextContent(/Already downloaded/i);
+    expect(banner).toHaveTextContent(
+      "/data/out/My Video [abc12345678].mp4",
+    );
+  });
+
+  it("swaps Download for Force re-download when already downloaded", () => {
+    render(
+      <PreviewVideo
+        entry={{
+          ...baseEntry,
+          already_downloaded: {
+            path: "/data/out/x.mp4",
+            title: null,
+          },
+        }}
+        format="best"
+        onDownload={async () => {}}
+        busy={false}
+      />,
+    );
+    expect(
+      screen.getByRole("button", { name: /Force re-download/i }),
+    ).toBeInTheDocument();
+    // The plain Download button label must NOT appear as an exact match
+    // when the duplicate state is active.
+    expect(
+      screen.queryByRole("button", { name: /^Download$/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("calls onDownload when Force re-download is clicked", async () => {
+    const onDownload = vi.fn(async () => {});
+    render(
+      <PreviewVideo
+        entry={{
+          ...baseEntry,
+          already_downloaded: {
+            path: "/data/out/x.mp4",
+            title: null,
+          },
+        }}
+        format="best"
+        onDownload={onDownload}
+        busy={false}
+      />,
+    );
+    const btn = screen.getByRole("button", { name: /Force re-download/i });
+    await act(async () => {
+      btn.click();
+    });
+    expect(onDownload).toHaveBeenCalled();
+  });
 });

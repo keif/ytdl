@@ -49,17 +49,27 @@ export async function getJob(id: string): Promise<Job> {
   return r.json();
 }
 
+/** Optional flags accepted by /jobs POST. `force_overwrite` bypasses the
+ * server's duplicate-detection 409 and also tells yt-dlp to overwrite an
+ * existing output file on disk — the same flag the /redownload endpoint
+ * sets on the cloned job row. */
+export interface CreateJobOptions {
+  force_overwrite?: boolean;
+}
+
 export async function createJob(
   url: string,
   formatPref?: string,
   subtitles?: boolean,
   outputDir?: string,
+  opts?: CreateJobOptions,
 ): Promise<Job> {
   const body: Record<string, unknown> = { url, format_pref: formatPref };
   // Only send the field when the caller passed an explicit value — the
   // server treats `undefined`/missing as "use the configured default".
   if (subtitles !== undefined) body.subtitles = subtitles;
   if (outputDir !== undefined) body.output_dir = outputDir;
+  if (opts?.force_overwrite) body.force_overwrite = true;
   const r = await fetch("/jobs", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -67,6 +77,16 @@ export async function createJob(
   });
   if (!r.ok) {
     const detail = await r.json().catch(() => ({}));
+    // Duplicate detection returns a structured object: surface a friendly
+    // message so the caller can display "Already downloaded to /path" and
+    // offer a Force re-download button. Everything else falls through to
+    // the existing message-extraction path.
+    if (r.status === 409 && detail?.detail?.code === "duplicate") {
+      const dupPath = detail.detail.path ?? "";
+      throw new Error(
+        `Already downloaded${dupPath ? ` to ${dupPath}` : ""}. Use Force re-download to override.`,
+      );
+    }
     throw new Error(detail.detail?.[0]?.msg ?? detail.detail ?? `createJob: ${r.status}`);
   }
   return r.json();
@@ -77,10 +97,12 @@ export async function createJobsFromPick(
   formatPref?: string,
   subtitles?: boolean,
   outputDir?: string,
+  opts?: CreateJobOptions,
 ): Promise<Job> {
   const body: Record<string, unknown> = { urls, format_pref: formatPref };
   if (subtitles !== undefined) body.subtitles = subtitles;
   if (outputDir !== undefined) body.output_dir = outputDir;
+  if (opts?.force_overwrite) body.force_overwrite = true;
   const r = await fetch("/jobs", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -88,6 +110,12 @@ export async function createJobsFromPick(
   });
   if (!r.ok) {
     const detail = await r.json().catch(() => ({}));
+    if (r.status === 409 && detail?.detail?.code === "duplicate") {
+      const dupPath = detail.detail.path ?? "";
+      throw new Error(
+        `Already downloaded${dupPath ? ` to ${dupPath}` : ""}. Use Force re-download to override.`,
+      );
+    }
     throw new Error(detail.detail?.[0]?.msg ?? detail.detail ?? `createJobsFromPick: ${r.status}`);
   }
   return r.json();
@@ -118,11 +146,21 @@ export async function redownloadJob(id: string): Promise<Job> {
   return r.json();
 }
 
+/** Populated by /preview when the entry's video_id is in the library
+ * index (from a previous ytdl run or a manual copy under a scan dir).
+ * The UI renders a banner + swaps Download to Force re-download when
+ * present. Missing/null means "not detected as duplicate". */
+export interface DuplicateInfo {
+  path: string;
+  title: string | null;
+}
+
 export interface PreviewEntry {
   url: string;
   id: string | null;
   title: string | null;
   position: number | null;
+  already_downloaded?: DuplicateInfo | null;
 }
 
 export interface PreviewResponse {
@@ -208,6 +246,13 @@ export interface StatusResponse {
   // Surfaced so a future PR can show "Probe timeout: 30s" in the settings
   // panel — typed access only for now.
   probe_timeout_s: number;
+  // Directories scanned to build the duplicate-detection index. Surfaced
+  // for a future settings pane — the current UI just needs to know the
+  // feature is on.
+  library_scan_dirs: string[];
+  // Duplicate-detection feature flag. When false, /preview never sets
+  // already_downloaded and /jobs never returns 409 for a duplicate.
+  dedup_enabled: boolean;
 }
 
 export async function fetchStatus(): Promise<StatusResponse> {

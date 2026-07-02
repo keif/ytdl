@@ -166,6 +166,80 @@ describe("PreviewPanel", () => {
     expect(onConfirm).toHaveBeenCalledWith(["https://yt/a", "https://yt/b"]);
   });
 
+  it("renders a badge for entries flagged already_downloaded", async () => {
+    const withDup: PreviewEntry[] = [
+      {
+        url: "https://x/a",
+        id: "a",
+        title: "Alpha",
+        position: 1,
+        already_downloaded: {
+          path: "/data/out/Alpha [aaa11111111].mp4",
+          title: "Alpha",
+        },
+      },
+      { url: "https://x/b", id: "b", title: "Bravo", position: 2 },
+    ];
+    render(
+      <PreviewPanel
+        title="Mix"
+        entries={withDup}
+        onConfirm={async () => {}}
+        onCancel={() => {}}
+      />,
+    );
+    // The header summary counts duplicates.
+    expect(
+      screen.getByText(/1 already downloaded/i),
+    ).toBeInTheDocument();
+    // Duplicate row carries an "already downloaded" aria label.
+    expect(
+      screen.getByLabelText(/already downloaded/i),
+    ).toBeInTheDocument();
+  });
+
+  it("Include-already-downloaded toggle is off by default and unchecks duplicates", async () => {
+    const withDup: PreviewEntry[] = [
+      {
+        url: "https://x/a",
+        id: "a",
+        title: "Alpha",
+        position: 1,
+        already_downloaded: {
+          path: "/data/out/Alpha [aaa11111111].mp4",
+          title: "Alpha",
+        },
+      },
+      { url: "https://x/b", id: "b", title: "Bravo", position: 2 },
+    ];
+    render(
+      <PreviewPanel
+        title="Mix"
+        entries={withDup}
+        onConfirm={async () => {}}
+        onCancel={() => {}}
+      />,
+    );
+    // The include-duplicates toggle exists and is off by default.
+    const toggle = screen.getByLabelText(
+      /Include already-downloaded/i,
+    ) as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    // Only the non-duplicate entry is selected initially. The submit
+    // button label surfaces the selection count without ambiguity.
+    expect(
+      screen.getByRole("button", { name: /Download 1 selected/i }),
+    ).toBeInTheDocument();
+    // Enable the toggle; both rows become selected.
+    await act(async () => {
+      fireEvent.click(toggle);
+    });
+    expect(toggle.checked).toBe(true);
+    expect(
+      screen.getByRole("button", { name: /Download 2 selected/i }),
+    ).toBeInTheDocument();
+  });
+
   it("resets selection when entries prop changes", async () => {
     const onConfirm = vi.fn(async () => {});
     const firstEntries: PreviewEntry[] = [

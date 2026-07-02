@@ -24,6 +24,24 @@ function formatDuration(seconds: number | null): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
+/** Compute the default set of selected indexes for a fresh render.
+ *
+ * When `includeDuplicates` is true, every entry is checked (the historical
+ * behavior). When false, already-downloaded entries are unchecked by default
+ * so the user's confirm click doesn't silently re-queue N files that are
+ * already on disk. */
+function initialSelected(
+  entries: PreviewEntry[],
+  includeDuplicates: boolean,
+): Set<number> {
+  if (includeDuplicates) return new Set(entries.map((_, i) => i));
+  const out = new Set<number>();
+  entries.forEach((entry, i) => {
+    if (!entry.already_downloaded) out.add(i);
+  });
+  return out;
+}
+
 /**
  * Playlist picker. Renders synchronously from the flat probe and fetches
  * per-entry details (duration, uploader, thumbnail) in batches afterwards
@@ -33,18 +51,26 @@ function formatDuration(seconds: number | null): string {
  * "Download N selected" to enqueue only the chosen subset.
  */
 export function PreviewPanel({ title, entries, onConfirm, onCancel }: Props) {
-  const [selected, setSelected] = useState<Set<number>>(
-    () => new Set(entries.map((_, i) => i))
+  // "Include already-downloaded" toggle. Defaults OFF so the user doesn't
+  // accidentally re-queue everything they already have when they submit
+  // the picker. Flipping it on re-adds the duplicate rows to the initial
+  // selection; the user can still cherry-pick individual boxes either way.
+  const [includeDuplicates, setIncludeDuplicates] = useState(false);
+  const [selected, setSelected] = useState<Set<number>>(() =>
+    initialSelected(entries, includeDuplicates),
   );
   const [enriched, setEnriched] = useState<Map<string, EnrichedEntry>>(new Map());
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  // Reset selection whenever entries change to avoid stale state from a
-  // previous playlist surviving in the component.
+  // Reset selection whenever entries change OR the includeDuplicates toggle
+  // flips. New playlist == new checkbox state; toggling the switch re-seeds
+  // the selection from the toggle's current value (previous manual picks
+  // are intentionally discarded — surfacing "here's what you'd get with
+  // the toggle in this state" beats trying to remember prior intent).
   useEffect(() => {
-    setSelected(new Set(entries.map((_, i) => i)));
-  }, [entries]);
+    setSelected(initialSelected(entries, includeDuplicates));
+  }, [entries, includeDuplicates]);
 
   // Lazy-enrich in batches once the picker is on screen. Sequential
   // batches keep server fan-out bounded; the backend further caps
@@ -103,21 +129,36 @@ export function PreviewPanel({ title, entries, onConfirm, onCancel }: Props) {
     setSelected(new Set());
   }
 
+  const dupeCount = entries.filter((e) => e.already_downloaded).length;
+
   return (
     <section
       className="border border-neutral-800 rounded bg-neutral-950"
       aria-label="playlist picker"
     >
-      <header className="flex items-center justify-between p-3 border-b border-neutral-800">
+      <header className="flex items-center justify-between p-3 border-b border-neutral-800 gap-3 flex-wrap">
         <div>
           <h2 className="text-sm font-medium">
             {title ?? "Playlist"}
           </h2>
           <p className="text-xs text-neutral-400">
             {entries.length} entries — {selected.size} selected
+            {dupeCount > 0 && ` — ${dupeCount} already downloaded`}
           </p>
         </div>
-        <div className="flex items-center gap-2 text-xs">
+        <div className="flex items-center gap-3 text-xs">
+          {dupeCount > 0 && (
+            <label className="flex items-center gap-1 text-neutral-400 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={includeDuplicates}
+                onChange={(e) => setIncludeDuplicates(e.target.checked)}
+                aria-label="Include already-downloaded"
+                className="accent-amber-500"
+              />
+              Include already-downloaded
+            </label>
+          )}
           <button
             type="button"
             className="text-neutral-400 hover:text-neutral-100"
@@ -143,10 +184,14 @@ export function PreviewPanel({ title, entries, onConfirm, onCancel }: Props) {
           const checked = selected.has(idx);
           const displayTitle = meta?.title ?? entry.title ?? entry.url;
           const duration = formatDuration(meta?.duration_s ?? null);
+          const isDuplicate = Boolean(entry.already_downloaded);
           return (
             <li
               key={entry.url + idx}
-              className="flex items-center gap-3 px-3 py-2 text-sm"
+              className={
+                "flex items-center gap-3 px-3 py-2 text-sm " +
+                (isDuplicate ? "opacity-60" : "")
+              }
             >
               <input
                 type="checkbox"
@@ -169,7 +214,18 @@ export function PreviewPanel({ title, entries, onConfirm, onCancel }: Props) {
                 <div className="w-16 h-9 rounded bg-neutral-900" aria-hidden />
               )}
               <div className="flex-1 min-w-0">
-                <p className="truncate">{displayTitle}</p>
+                <p className="truncate flex items-center gap-1">
+                  {isDuplicate && (
+                    <span
+                      title={`Already downloaded to ${entry.already_downloaded?.path ?? ""}`}
+                      aria-label="already downloaded"
+                      className="text-amber-400"
+                    >
+                      ✓
+                    </span>
+                  )}
+                  <span className="truncate">{displayTitle}</span>
+                </p>
                 <p className="text-xs text-neutral-500 truncate">
                   {meta?.uploader ?? ""}
                   {meta?.uploader && duration ? " · " : ""}

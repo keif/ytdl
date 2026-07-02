@@ -8,7 +8,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _MIGRATIONS: dict[int, list[str]] = {
     1: [
@@ -65,6 +65,28 @@ _MIGRATIONS: dict[int, list[str]] = {
         # MP4, and also save a sidecar .vtt the user's media library can pick
         # up. Defaults to 0 so existing rows stay opt-out.
         "ALTER TABLE jobs ADD COLUMN subtitles INTEGER NOT NULL DEFAULT 0",
+    ],
+    4: [
+        # Duplicate-detection index. Rows here point at files already on
+        # disk that carry a yt-dlp-style ``[<video_id>].<ext>`` suffix in
+        # their filename. Populated on startup + when jobs finish + via
+        # POST /library/rescan. The /preview + /jobs endpoints consult it
+        # to warn the user before queuing something they already have.
+        #
+        # video_id is PRIMARY KEY: the same file (moved between scans) is
+        # idempotently updated on rescan rather than duplicated. The
+        # separate index is redundant with the PK but keeps future queries
+        # that don't hit the PK path fast.
+        """
+        CREATE TABLE IF NOT EXISTS library_files (
+            video_id        TEXT PRIMARY KEY,
+            path            TEXT NOT NULL,
+            title           TEXT,
+            filesize_bytes  INTEGER,
+            scanned_at      INTEGER NOT NULL
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS library_files_video_id ON library_files(video_id)",
     ],
 }
 

@@ -260,6 +260,82 @@ def test_probe_timeout_loads_from_toml(tmp_data_dir: Path) -> None:
     assert cfg.probe_timeout_s == 45
 
 
+def test_library_scan_dirs_defaults_to_output_dir(tmp_data_dir: Path) -> None:
+    """When no env / TOML pin, the resolved scan dirs fall back to
+    (output_dir,). The stored tuple stays empty (that's how we know the
+    user didn't opt in) but the resolver expands it at read time."""
+    cfg = load_config()
+    assert cfg.library_scan_dirs == ()
+    resolved = cfg.resolve_library_scan_dirs()
+    assert resolved == (str(cfg.output_dir),)
+
+
+def test_library_scan_dirs_env_override_parses_comma_separated(
+    tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("YTDL_LIBRARY_SCAN_DIRS", "/a, /b/nested , /c")
+    cfg = load_config()
+    assert cfg.library_scan_dirs == ("/a", "/b/nested", "/c")
+    # Resolver returns the explicit list verbatim (no fallback).
+    assert cfg.resolve_library_scan_dirs() == ("/a", "/b/nested", "/c")
+
+
+def test_library_scan_dirs_env_expands_tilde(
+    tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", "/home/user")
+    monkeypatch.setenv("YTDL_LIBRARY_SCAN_DIRS", "~/Videos,/mnt/media")
+    cfg = load_config()
+    assert cfg.library_scan_dirs == ("/home/user/Videos", "/mnt/media")
+
+
+def test_library_scan_dirs_env_drops_empty_entries(
+    tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("YTDL_LIBRARY_SCAN_DIRS", "/a,,  ,/b")
+    cfg = load_config()
+    assert cfg.library_scan_dirs == ("/a", "/b")
+
+
+def test_library_scan_dirs_loads_from_toml(tmp_data_dir: Path) -> None:
+    cfg_path = tmp_data_dir / "config" / "ytdl" / "config.toml"
+    cfg_path.parent.mkdir(parents=True)
+    cfg_path.write_text(
+        'library_scan_dirs = ["/mnt/plex", "/mnt/backup"]\n'
+    )
+    cfg = load_config()
+    assert cfg.library_scan_dirs == ("/mnt/plex", "/mnt/backup")
+
+
+def test_dedup_enabled_defaults_true(tmp_data_dir: Path) -> None:
+    cfg = load_config()
+    assert cfg.dedup_enabled is True
+
+
+def test_dedup_enabled_env_false(
+    tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("YTDL_DEDUP_ENABLED", "false")
+    cfg = load_config()
+    assert cfg.dedup_enabled is False
+
+
+def test_dedup_enabled_env_true(
+    tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("YTDL_DEDUP_ENABLED", "true")
+    cfg = load_config()
+    assert cfg.dedup_enabled is True
+
+
+def test_dedup_enabled_loads_from_toml(tmp_data_dir: Path) -> None:
+    cfg_path = tmp_data_dir / "config" / "ytdl" / "config.toml"
+    cfg_path.parent.mkdir(parents=True)
+    cfg_path.write_text("dedup_enabled = false\n")
+    cfg = load_config()
+    assert cfg.dedup_enabled is False
+
+
 def test_load_config_sets_cookies_source_autodetect_or_none(
     tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

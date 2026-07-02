@@ -37,6 +37,8 @@ def test_status_returns_cookies_and_runtime_keys(client: TestClient) -> None:
         "output_dir",
         "autosubmit_delay_s",
         "probe_timeout_s",
+        "library_scan_dirs",
+        "dedup_enabled",
     }
     for key in ("deno", "ffmpeg"):
         assert set(body[key].keys()) == {"present", "path"}
@@ -52,6 +54,15 @@ def test_status_returns_cookies_and_runtime_keys(client: TestClient) -> None:
     # Default probe timeout — 30s. Catches accidental default drift.
     assert isinstance(body["probe_timeout_s"], int)
     assert body["probe_timeout_s"] == 30
+    # Duplicate-detection surface. Default `dedup_enabled=True` and empty
+    # `library_scan_dirs` fall back to `[str(output_dir)]` — the resolved
+    # list is what /status reports so the client sees exactly what gets
+    # scanned.
+    assert isinstance(body["dedup_enabled"], bool)
+    assert body["dedup_enabled"] is True
+    assert isinstance(body["library_scan_dirs"], list)
+    assert body["library_scan_dirs"]  # falls back to (output_dir,)
+    assert all(isinstance(d, str) for d in body["library_scan_dirs"])
 
 
 def test_status_surfaces_subtitles_default(tmp_path: Path) -> None:

@@ -497,3 +497,207 @@ def test_post_jobs_output_dir_unresolvable_tilde_returns_400(
         json={"url": "https://yt/x", "output_dir": "~nosuchuser_xyz_12345/foo"},
     )
     assert r.status_code == 400
+
+
+# --- duplicate detection ---
+
+
+def _seed_library_row(
+    db_path: Path, video_id: str, path: str, title: str | None = None
+) -> None:
+    from ytdl.db import connect, migrate
+    from ytdl.library import record_downloaded
+
+    conn = connect(db_path)
+    try:
+        migrate(conn)
+        record_downloaded(conn, video_id, path, title, None)
+    finally:
+        conn.close()
+
+
+def test_post_jobs_returns_409_when_url_video_id_indexed(
+    client: TestClient,
+) -> None:
+    """POST /jobs with a URL whose video_id lives in library_files must
+    reject with 409 so the client can render "already downloaded" without
+    silently enqueueing a duplicate download."""
+    db = client.app.state.config.db_path
+    _seed_library_row(
+        db, "abc12345678", "/data/out/Foo [abc12345678].mp4", "Foo"
+    )
+    r = client.post(
+        "/jobs", json={"url": "https://youtu.be/abc12345678"}
+    )
+    assert r.status_code == 409
+    detail = r.json()["detail"]
+    assert detail["code"] == "duplicate"
+    assert detail["path"] == "/data/out/Foo [abc12345678].mp4"
+    assert "force_overwrite" in detail["hint"]
+
+
+def test_post_jobs_force_overwrite_bypasses_duplicate_check(
+    client: TestClient,
+) -> None:
+    """Setting force_overwrite=true is the escape hatch — the check is
+    skipped, the job is enqueued, and the flag is persisted on the row so
+    the worker instructs yt-dlp to overwrite the existing file."""
+    db = client.app.state.config.db_path
+    _seed_library_row(
+        db, "abc12345678", "/data/out/Foo [abc12345678].mp4", "Foo"
+    )
+    r = client.post(
+        "/jobs",
+        json={
+            "url": "https://youtu.be/abc12345678",
+            "force_overwrite": True,
+        },
+    )
+    assert r.status_code == 201
+    body = r.json()
+    assert body["force_overwrite"] is True
+    assert body["status"] == "pending"
+
+
+def test_post_jobs_urls_array_rejects_when_any_child_is_duplicate(
+    client: TestClient,
+) -> None:
+    """The urls[] branch must fail-fast on the first indexed video_id so
+    the batch stays atomic — a partial enqueue would leave the client
+    thinking the whole submit failed."""
+    db = client.app.state.config.db_path
+    _seed_library_row(
+        db, "abc12345678", "/data/out/Foo [abc12345678].mp4", None
+    )
+    r = client.post(
+        "/jobs",
+        json={
+            "urls": [
+                "https://youtu.be/newnew11111",  # not indexed
+                "https://youtu.be/abc12345678",  # indexed — trips 409
+            ]
+        },
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "duplicate"
+    # Verify no rows leaked in.
+    listed = client.get("/jobs").json()["jobs"]
+    assert not any(
+        j["url"].startswith("https://youtu.be/") for j in listed
+    )
+
+
+def test_post_jobs_urls_array_force_overwrite_bypasses(
+    client: TestClient,
+) -> None:
+    """force_overwrite=true propagates to every enqueued child in the
+    urls[] batch, so the whole selection re-downloads even when several
+    URLs are duplicates."""
+    db = client.app.state.config.db_path
+    _seed_library_row(db, "abc12345678", "/data/out/A.mp4", None)
+    _seed_library_row(db, "def12345678", "/data/out/B.mp4", None)
+    r = client.post(
+        "/jobs",
+        json={
+            "urls": [
+                "https://youtu.be/abc12345678",
+                "https://youtu.be/def12345678",
+            ],
+            "force_overwrite": True,
+        },
+    )
+    assert r.status_code == 201
+    listed = client.get("/jobs").json()["jobs"]
+    children = [j for j in listed if j["url"].startswith("https://youtu.be/")]
+    assert len(children) == 2
+    assert all(j["force_overwrite"] is True for j in children)
+
+
+def test_post_jobs_unrecognized_url_shape_skips_dedup_check(
+    client: TestClient,
+) -> None:
+    """URLs that don't match a canonical YouTube shape (extract_video_id_
+    from_url returns None) fall through to the enqueue. Better to let the
+    probe path catch the duplicate at run time than block a valid non-YT
+    URL because we can't parse an id locally."""
+    db = client.app.state.config.db_path
+    _seed_library_row(db, "abc12345678", "/data/out/x.mp4", None)
+    # No id parseable from example.com; the seeded row is irrelevant here.
+    r = client.post(
+        "/jobs", json={"url": "https://example.com/some-video"}
+    )
+    assert r.status_code == 201
+
+
+def test_post_jobs_playlist_url_skips_single_video_dedup_check(
+    client: TestClient,
+) -> None:
+    """A URL with `list=PL...` targets a playlist. The pre-enqueue check
+    extracts the anchor `v=` id, but the worker will expand the URL into
+    all playlist entries — blocking on the anchor being a duplicate
+    would prevent queueing the whole playlist. Codex-caught: the picker
+    flow already handles per-entry dedup at the UI level; direct submit
+    of a playlist URL should skip the single-video check entirely."""
+    db = client.app.state.config.db_path
+    # Seed the anchor video as an existing duplicate.
+    _seed_library_row(db, "abcVIDEO1234", "/data/out/anchor.mp4", None)
+
+    # The playlist URL uses that anchor as `?v=` but the intent is the
+    # whole playlist. Must accept (201), NOT reject (409).
+    r = client.post(
+        "/jobs",
+        json={"url": "https://www.youtube.com/watch?v=abcVIDEO1234&list=PLxyz"},
+    )
+    assert r.status_code == 201, (
+        f"expected 201 (playlist enqueue proceeds), got {r.status_code}: {r.text}"
+    )
+
+
+def test_post_jobs_urls_batch_checks_dedup_even_when_url_has_list_param(
+    client: TestClient,
+) -> None:
+    """The urls[] branch is the picker submitting a chosen subset. Each
+    URL is a picked video, even if it carries `&list=...` params from
+    the address bar. Codex-caught: the earlier fix skipped playlist-
+    shaped URLs entirely, which meant a duplicate picked entry with
+    `list=...` slipped through. The single-URL branch still skips
+    playlist shapes (that's the top-level playlist submit case)."""
+    db = client.app.state.config.db_path
+    _seed_library_row(db, "pickedDUP12", "/data/out/existing.mp4", None)
+
+    # Picker-style submit — urls[] batch. The picked video happens to
+    # carry a list= param. Must return 409, NOT 201.
+    r = client.post(
+        "/jobs",
+        json={
+            "urls": [
+                "https://www.youtube.com/watch?v=pickedDUP12&list=PLxyz"
+            ],
+        },
+    )
+    assert r.status_code == 409, (
+        f"expected 409 (picked video is a duplicate), "
+        f"got {r.status_code}: {r.text}"
+    )
+
+
+def test_post_jobs_duplicate_check_disabled_when_dedup_off(
+    tmp_path: Path,
+) -> None:
+    """When cfg.dedup_enabled=False, the 409 path is bypassed entirely so
+    an operator who wants to disable the feature globally can, without
+    having to empty library_scan_dirs."""
+    cfg = Config(
+        output_dir=tmp_path / "out",
+        db_path=tmp_path / "ytdl.db",
+        workers=0,
+        cookies_browser=None,
+        default_format="best",
+        dedup_enabled=False,
+    )
+    c = TestClient(build_app(cfg))
+    _seed_library_row(
+        cfg.db_path, "abc12345678", "/data/out/A.mp4", None
+    )
+    r = c.post("/jobs", json={"url": "https://youtu.be/abc12345678"})
+    assert r.status_code == 201

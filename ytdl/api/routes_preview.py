@@ -17,7 +17,9 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 
+from ytdl.db import connect, migrate
 from ytdl.downloader import probe, probe_one
+from ytdl.library import lookup_by_video_id
 
 router = APIRouter(tags=["preview"])
 
@@ -40,11 +42,28 @@ class PreviewRequest(BaseModel):
         return v
 
 
+class DuplicateInfo(BaseModel):
+    """Metadata about an existing file that already covers this video.
+
+    Emitted on ``PreviewEntry.already_downloaded`` when the entry's
+    ``id`` is in the library index. The UI renders a banner from this so
+    the user can decide whether to force a re-download or skip.
+    """
+
+    path: str
+    title: str | None = None
+
+
 class PreviewEntry(BaseModel):
     url: str
     id: str | None = None
     title: str | None = None
     position: int | None = None
+    # Populated by the /preview route when the entry's video_id is in
+    # the library index (either from a previous ytdl run or a manual copy
+    # sitting under one of the scan dirs). Absent when no duplicate is
+    # detected — the UI treats missing and null identically.
+    already_downloaded: DuplicateInfo | None = None
 
 
 class PreviewResponse(BaseModel):
@@ -115,21 +134,54 @@ async def post_preview(payload: PreviewRequest, request: Request) -> PreviewResp
     kind = "playlist" if info.get("_type") == "playlist" else "video"
     title = info.get("title")
     raw_entries = info.get("entries") if kind == "playlist" else [info]
-    entries: list[PreviewEntry] = []
-    for idx, entry in enumerate(raw_entries or []):
-        if not isinstance(entry, dict):
-            continue
-        entry_url = entry.get("webpage_url") or entry.get("url") or ""
-        if not entry_url:
-            continue
-        entries.append(
-            PreviewEntry(
-                url=entry_url,
-                id=entry.get("id"),
-                title=entry.get("title"),
-                position=entry.get("playlist_index") or (idx + 1),
+
+    # Open one connection to the library index for the whole preview.
+    # Skipped when dedup is disabled OR when the URL is a playlist with no
+    # entries (walking the list would just be zero lookups anyway).
+    dedup_enabled = getattr(cfg, "dedup_enabled", True)
+    lib_conn = None
+    if dedup_enabled:
+        try:
+            lib_conn = connect(cfg.db_path)
+            migrate(lib_conn)
+        except BaseException as exc:
+            log_err = exc
+            lib_conn = None
+            # Non-fatal — preview still works without dedup annotations.
+            # A failed DB open here shouldn't take down the whole endpoint.
+            import logging as _logging
+
+            _logging.getLogger(__name__).warning(
+                "preview: skipping dedup lookup, DB open failed: %s", log_err
             )
-        )
+    try:
+        entries: list[PreviewEntry] = []
+        for idx, entry in enumerate(raw_entries or []):
+            if not isinstance(entry, dict):
+                continue
+            entry_url = entry.get("webpage_url") or entry.get("url") or ""
+            if not entry_url:
+                continue
+            entry_id = entry.get("id")
+            already: DuplicateInfo | None = None
+            if lib_conn is not None and entry_id:
+                hit = lookup_by_video_id(lib_conn, entry_id)
+                if hit is not None:
+                    already = DuplicateInfo(
+                        path=hit["path"], title=hit.get("title")
+                    )
+            entries.append(
+                PreviewEntry(
+                    url=entry_url,
+                    id=entry_id,
+                    title=entry.get("title"),
+                    position=entry.get("playlist_index") or (idx + 1),
+                    already_downloaded=already,
+                )
+            )
+    finally:
+        if lib_conn is not None:
+            lib_conn.close()
     return PreviewResponse(kind=kind, title=title, entries=entries)
 
 

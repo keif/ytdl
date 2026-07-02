@@ -185,19 +185,16 @@ def scan_directories(
         # doesn't accidentally match `/media/abc-videos/...`.
         for root in resolved:
             root_prefix = root if root.endswith("/") else root + "/"
-            # SQLite LIKE treats `%` and `_` as wildcards; a scan root
-            # containing either (e.g. `/media/lib_1`) would match
-            # unrelated paths (`/media/libX1`) and delete them. Escape
-            # both plus the escape char itself, then use `ESCAPE '\\'`.
-            escaped_prefix = (
-                root_prefix.replace("\\", "\\\\")
-                .replace("%", "\\%")
-                .replace("_", "\\_")
-            )
+            # LIKE is ASCII case-insensitive by default AND treats `%`/`_`
+            # as wildcards. Both mean a rescan of `/media/lib` could
+            # match rows under `/media/Lib` (case-sensitive filesystems)
+            # or `/media/lib_1` (wildcard). Use substr() for an exact
+            # byte-for-byte prefix comparison — no wildcards, always
+            # case-sensitive.
             existing = conn.execute(
                 "SELECT video_id, path FROM library_files "
-                "WHERE path LIKE ? || '%' ESCAPE '\\'",
-                (escaped_prefix,),
+                "WHERE substr(path, 1, ?) = ?",
+                (len(root_prefix), root_prefix),
             ).fetchall()
             for existing_row in existing:
                 vid = (

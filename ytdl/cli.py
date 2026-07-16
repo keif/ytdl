@@ -67,6 +67,8 @@ def _preview_entries(
     cookies_browser: str | None,
     *,
     socket_timeout: int = 30,
+    cookies_file: str | None = None,
+    pot_provider_url: str | None = None,
 ) -> tuple[str, list[dict]]:
     """Run a flat probe and normalize into (kind, [{url,title,position}]).
 
@@ -77,7 +79,13 @@ def _preview_entries(
     """
     from ytdl.downloader import probe
 
-    info = probe(url, cookies_browser=cookies_browser, socket_timeout=socket_timeout)
+    info = probe(
+        url,
+        cookies_browser=cookies_browser,
+        socket_timeout=socket_timeout,
+        cookies_file=cookies_file,
+        pot_provider_url=pot_provider_url,
+    )
     kind = "playlist" if info.get("_type") == "playlist" else "video"
     raw_entries = info.get("entries") if kind == "playlist" else [info]
     entries: list[dict] = []
@@ -106,6 +114,8 @@ def _download_one(
     subtitles: bool = False,
     subtitle_langs: tuple[str, ...] | list[str] = ("en",),
     probe_timeout_s: int = 30,
+    cookies_file: str | None = None,
+    pot_provider_url: str | None = None,
 ) -> None:
     """Synchronously download a single URL, printing percent progress."""
     from yt_dlp import YoutubeDL  # late import to keep CLI startup snappy
@@ -141,6 +151,8 @@ def _download_one(
     ctx = DownloadContext(
         ydl_cls=YoutubeDL,
         cookies_browser=cookies_browser,
+        cookies_file=cookies_file,
+        pot_provider_url=pot_provider_url,
         on_progress=on_progress,
         cancel_flag=lambda: False,
         subtitle_langs=tuple(subtitle_langs) or ("en",),
@@ -191,11 +203,17 @@ def get(
             subtitles=subs,
             subtitle_langs=cfg.subtitle_langs,
             probe_timeout_s=cfg.probe_timeout_s,
+            cookies_file=cfg.cookies_file,
+            pot_provider_url=cfg.pot_provider_url,
         )
         return
 
     kind, entries = _preview_entries(
-        url, cfg.cookies_browser, socket_timeout=cfg.probe_timeout_s
+        url,
+        cfg.cookies_browser,
+        socket_timeout=cfg.probe_timeout_s,
+        cookies_file=cfg.cookies_file,
+        pot_provider_url=cfg.pot_provider_url,
     )
     if kind != "playlist" or not entries:
         raise typer.BadParameter(
@@ -217,6 +235,8 @@ def get(
             subtitles=subs,
             subtitle_langs=cfg.subtitle_langs,
             probe_timeout_s=cfg.probe_timeout_s,
+            cookies_file=cfg.cookies_file,
+            pot_provider_url=cfg.pot_provider_url,
         )
 
 
@@ -231,7 +251,11 @@ def preview(
     """
     cfg = load_config()
     kind, entries = _preview_entries(
-        url, cfg.cookies_browser, socket_timeout=cfg.probe_timeout_s
+        url,
+        cfg.cookies_browser,
+        socket_timeout=cfg.probe_timeout_s,
+        cookies_file=cfg.cookies_file,
+        pot_provider_url=cfg.pot_provider_url,
     )
     if not entries:
         console.print("[yellow]no entries[/yellow]")
@@ -253,7 +277,9 @@ def serve(
     from ytdl.api import build_app
 
     cfg = load_config()
-    if cfg.cookies_browser:
+    if cfg.cookies_file:
+        console.print(f"[cyan]cookies:[/cyan] using file {cfg.cookies_file}")
+    elif cfg.cookies_browser:
         if cfg.cookies_source == "autodetect":
             console.print(
                 f"[cyan]cookies:[/cyan] using {cfg.cookies_browser} (auto-detected)"
@@ -401,7 +427,11 @@ def queue_add(
             return
 
         kind, entries = _preview_entries(
-            url, cfg.cookies_browser, socket_timeout=cfg.probe_timeout_s
+            url,
+            cfg.cookies_browser,
+            socket_timeout=cfg.probe_timeout_s,
+            cookies_file=cfg.cookies_file,
+            pot_provider_url=cfg.pot_provider_url,
         )
         if kind != "playlist" or not entries:
             raise typer.BadParameter(
@@ -525,16 +555,19 @@ def queue_clear(
 
 @cookies_app.command("status")
 def cookies_status() -> None:
-    """Print the cookies browser that will be used at job time."""
+    """Print the cookie sources that will be used at job time."""
     cfg = load_config()
+    if cfg.cookies_file:
+        console.print(f"file: [bold]{cfg.cookies_file}[/bold]")
     if cfg.cookies_browser:
         console.print(
             f"browser: [bold]{cfg.cookies_browser}[/bold] ({cfg.cookies_source})"
         )
-    else:
+    elif not cfg.cookies_file:
         console.print("browser: [yellow]none detected[/yellow]")
         console.print(
-            "hint: run `ytdl cookies use <browser>` to set one explicitly"
+            "hint: run `ytdl cookies use <browser>` to set one explicitly, "
+            "or set YTDL_COOKIES_FILE to a cookies.txt (required in Docker)"
         )
 
 

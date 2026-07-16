@@ -232,6 +232,13 @@ export interface BinaryStatus {
 export interface StatusResponse {
   cookies_browser: string | null;
   cookies_source: "explicit" | "autodetect" | "none";
+  // Path to an active cookies.txt (yt-dlp's cookiefile), or null. Independent
+  // of cookies_browser — either or both may be set. In Docker this is the
+  // usual auth path since no host browser is reachable.
+  cookies_file: string | null;
+  // Base URL of a configured bgutil PO token provider, or null. Present means
+  // yt-dlp is wired to mint Proof-of-Origin tokens through it.
+  pot_provider_url: string | null;
   deno: BinaryStatus;
   ffmpeg: BinaryStatus;
   subtitles_default: boolean;

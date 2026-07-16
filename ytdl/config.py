@@ -29,6 +29,20 @@ class Config:
     cookies_browser: str | None
     default_format: str
     log_level: str = "INFO"
+    # Path to a Netscape-format cookies.txt handed to yt-dlp's `cookiefile`.
+    # This is the authentication path for environments with no reachable
+    # browser cookie store — chiefly Docker, where `cookies_browser` /
+    # autodetect find nothing because the container has no host browser
+    # profile. Tilde-expanded at load time. Env: YTDL_COOKIES_FILE.
+    # TOML: cookies_file = "/path/to/cookies.txt". Independent of
+    # `cookies_browser`; both may be set and yt-dlp merges them.
+    cookies_file: str | None = None
+    # Base URL of a bgutil PO token provider (the sidecar's HTTP server). When
+    # set, yt-dlp is wired to mint Proof-of-Origin tokens through it — required
+    # to get past YouTube's anti-bot gate on hosts where cookies alone return
+    # LOGIN_REQUIRED. Unset means no PO token provider (prior behavior).
+    # Env: YTDL_POT_PROVIDER_URL. TOML: pot_provider_url.
+    pot_provider_url: str | None = None
     # How `cookies_browser` was resolved:
     #   "explicit"   — pinned via env var or TOML
     #   "autodetect" — picked by scanning standard cookie-store paths
@@ -133,6 +147,24 @@ def _coerce_bool(v: str) -> bool:
     return v.strip().lower() in ("1", "true", "yes", "on")
 
 
+def _autodetect_cookies_file(db_path: Path) -> str | None:
+    """Find a cookies.txt in a conventional location when none is pinned.
+
+    Checks the database directory first — in the Docker image the DB lives in
+    the mounted ``/data`` volume, so dropping ``cookies.txt`` beside it is the
+    zero-config path (no compose edits, no env var). Then falls back to the
+    XDG config dir, the natural spot next to ``config.toml`` on a bare-metal
+    install. First existing file wins; returns ``None`` if neither is present.
+    """
+    for path in (
+        db_path.parent / "cookies.txt",
+        _xdg_config_home() / "ytdl" / "cookies.txt",
+    ):
+        if path.is_file():
+            return str(path)
+    return None
+
+
 def _read_toml() -> dict:
     path = _xdg_config_home() / "ytdl" / "config.toml"
     if not path.exists():
@@ -156,6 +188,10 @@ def _env_overrides() -> dict:
             raise ValueError(f"invalid YTDL_WORKERS={v!r}: must be an integer") from exc
     if v := os.environ.get("YTDL_COOKIES_BROWSER"):
         out["cookies_browser"] = v
+    if v := os.environ.get("YTDL_COOKIES_FILE"):
+        out["cookies_file"] = v
+    if v := os.environ.get("YTDL_POT_PROVIDER_URL"):
+        out["pot_provider_url"] = v
     if v := os.environ.get("YTDL_DEFAULT_FORMAT"):
         out["default_format"] = v
     if v := os.environ.get("YTDL_LOG_LEVEL"):
@@ -224,6 +260,16 @@ def load_config() -> Config:
 
         cookies_browser = autodetect_browser()
         cookies_source = "autodetect" if cookies_browser else "none"
+    db_path = Path(raw.get("db_path", _default_db_path()))
+    # Cookies file: an explicit env/TOML value wins (expand ~ so an operator
+    # can write ~/cookies.txt). With nothing pinned, auto-detect a cookies.txt
+    # in a conventional spot so a dropped file "just works" — the Docker /data
+    # mount especially, which the container has no other way to reach.
+    raw_cookies_file = raw.get("cookies_file")
+    if raw_cookies_file:
+        cookies_file: str | None = str(Path(str(raw_cookies_file)).expanduser())
+    else:
+        cookies_file = _autodetect_cookies_file(db_path)
     subtitles_default = bool(raw.get("subtitles_default", False))
     raw_langs = raw.get("subtitle_langs")
     if isinstance(raw_langs, list) and raw_langs:
@@ -283,9 +329,11 @@ def load_config() -> Config:
     dedup_enabled = bool(raw.get("dedup_enabled", True))
     return Config(
         output_dir=Path(raw.get("output_dir", _default_output_dir())),
-        db_path=Path(raw.get("db_path", _default_db_path())),
+        db_path=db_path,
         workers=workers,
         cookies_browser=cookies_browser,
+        cookies_file=cookies_file,
+        pot_provider_url=raw.get("pot_provider_url") or None,
         default_format=raw.get("default_format", "best"),
         log_level=raw.get("log_level", "INFO"),
         cookies_source=cookies_source,

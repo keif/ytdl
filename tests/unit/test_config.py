@@ -78,6 +78,111 @@ def test_load_config_sets_cookies_source_explicit_when_toml_provided(
     assert cfg.cookies_source == "explicit"
 
 
+def test_cookies_file_defaults_to_none(tmp_data_dir: Path) -> None:
+    cfg = load_config()
+    assert cfg.cookies_file is None
+
+
+def test_cookies_file_env_override(
+    tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("YTDL_COOKIES_FILE", "/cookies.txt")
+    cfg = load_config()
+    assert cfg.cookies_file == "/cookies.txt"
+
+
+def test_cookies_file_loads_from_toml(tmp_data_dir: Path) -> None:
+    cfg_path = tmp_data_dir / "config" / "ytdl" / "config.toml"
+    cfg_path.parent.mkdir(parents=True)
+    cfg_path.write_text('cookies_file = "/cookies.txt"\n')
+    cfg = load_config()
+    assert cfg.cookies_file == "/cookies.txt"
+
+
+def test_cookies_file_env_expands_tilde(
+    tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Operators may write ~/cookies.txt on a bare-metal install; expand it
+    server-side against HOME the same way library_scan_dirs does."""
+    monkeypatch.setenv("HOME", "/home/user")
+    monkeypatch.setenv("YTDL_COOKIES_FILE", "~/cookies.txt")
+    cfg = load_config()
+    assert cfg.cookies_file == "/home/user/cookies.txt"
+
+
+def test_cookies_file_autodetected_next_to_db(tmp_data_dir: Path) -> None:
+    """With nothing pinned, a cookies.txt sitting next to the database is
+    picked up automatically. This is the Docker case: the DB lives in the
+    mounted /data dir, so dropping cookies.txt beside it needs no compose
+    edits or env var."""
+    db_dir = tmp_data_dir / "data" / "ytdl"
+    db_dir.mkdir(parents=True)
+    cookie = db_dir / "cookies.txt"
+    cookie.write_text("# Netscape HTTP Cookie File\n")
+    cfg = load_config()
+    assert cfg.cookies_file == str(cookie)
+
+
+def test_cookies_file_autodetected_in_config_dir(tmp_data_dir: Path) -> None:
+    """A cookies.txt next to config.toml is auto-detected too — the natural
+    spot on a bare-metal install."""
+    cfg_dir = tmp_data_dir / "config" / "ytdl"
+    cfg_dir.mkdir(parents=True)
+    cookie = cfg_dir / "cookies.txt"
+    cookie.write_text("# Netscape HTTP Cookie File\n")
+    cfg = load_config()
+    assert cfg.cookies_file == str(cookie)
+
+
+def test_cookies_file_autodetect_prefers_db_dir_over_config_dir(
+    tmp_data_dir: Path,
+) -> None:
+    """When cookies.txt exists in both conventional locations, the DB dir
+    (the Docker /data mount) wins — that's the primary deployment target."""
+    db_dir = tmp_data_dir / "data" / "ytdl"
+    db_dir.mkdir(parents=True)
+    (db_dir / "cookies.txt").write_text("# db\n")
+    cfg_dir = tmp_data_dir / "config" / "ytdl"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "cookies.txt").write_text("# config\n")
+    cfg = load_config()
+    assert cfg.cookies_file == str(db_dir / "cookies.txt")
+
+
+def test_explicit_cookies_file_wins_over_autodetected(
+    tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An explicit env/TOML value is never overridden by an auto-detected
+    file, even when both exist."""
+    db_dir = tmp_data_dir / "data" / "ytdl"
+    db_dir.mkdir(parents=True)
+    (db_dir / "cookies.txt").write_text("# auto\n")
+    monkeypatch.setenv("YTDL_COOKIES_FILE", "/explicit/cookies.txt")
+    cfg = load_config()
+    assert cfg.cookies_file == "/explicit/cookies.txt"
+
+
+def test_pot_provider_url_defaults_to_none(tmp_data_dir: Path) -> None:
+    cfg = load_config()
+    assert cfg.pot_provider_url is None
+
+
+def test_pot_provider_url_env_override(
+    tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("YTDL_POT_PROVIDER_URL", "http://bgutil-provider:4416")
+    cfg = load_config()
+    assert cfg.pot_provider_url == "http://bgutil-provider:4416"
+
+
+def test_pot_provider_url_loads_from_toml(tmp_data_dir: Path) -> None:
+    cfg_path = tmp_data_dir / "config" / "ytdl" / "config.toml"
+    cfg_path.parent.mkdir(parents=True)
+    cfg_path.write_text('pot_provider_url = "http://127.0.0.1:4416"\n')
+    cfg = load_config()
+    assert cfg.pot_provider_url == "http://127.0.0.1:4416"
+
+
 def test_default_subtitle_langs_for_english_locale(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

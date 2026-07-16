@@ -110,6 +110,8 @@ _PROBE_TIMEOUT_DETAIL = (
 async def post_preview(payload: PreviewRequest, request: Request) -> PreviewResponse:
     cfg = request.app.state.config
     cookies = cfg.cookies_browser
+    cookies_file = cfg.cookies_file
+    pot_provider_url = cfg.pot_provider_url
     probe_timeout = cfg.probe_timeout_s
     # probe() shells out to a subprocess (see ytdl._probe_worker), so
     # subprocess.run's own timeout = socket_timeout + 5 reliably OS-kills
@@ -123,6 +125,8 @@ async def post_preview(payload: PreviewRequest, request: Request) -> PreviewResp
                 payload.url,
                 cookies_browser=cookies,
                 socket_timeout=probe_timeout,
+                cookies_file=cookies_file,
+                pot_provider_url=pot_provider_url,
             ),
             timeout=probe_timeout + 10,
         )
@@ -189,6 +193,8 @@ async def post_preview(payload: PreviewRequest, request: Request) -> PreviewResp
 async def post_enrich(payload: EnrichRequest, request: Request) -> EnrichResponse:
     cfg = request.app.state.config
     cookies = cfg.cookies_browser
+    cookies_file = cfg.cookies_file
+    pot_provider_url = cfg.pot_provider_url
     probe_timeout = cfg.probe_timeout_s
 
     sem = asyncio.Semaphore(_ENRICH_CONCURRENCY)
@@ -207,6 +213,8 @@ async def post_enrich(payload: EnrichRequest, request: Request) -> EnrichRespons
                         url,
                         cookies_browser=cookies,
                         socket_timeout=probe_timeout,
+                        cookies_file=cookies_file,
+                        pot_provider_url=pot_provider_url,
                     ),
                     timeout=probe_timeout + 10,
                 )

@@ -40,6 +40,8 @@ def build_app(config: Config) -> FastAPI:
                 workers=config.workers,
                 bus=bus,
                 cookies_browser=config.cookies_browser,
+                cookies_file=config.cookies_file,
+                pot_provider_url=config.pot_provider_url,
                 subtitle_langs=config.subtitle_langs,
                 probe_timeout_s=config.probe_timeout_s,
             )
@@ -104,6 +106,8 @@ def build_app(config: Config) -> FastAPI:
         return {
             "cookies_browser": cfg.cookies_browser,
             "cookies_source": cfg.cookies_source,
+            "cookies_file": cfg.cookies_file,
+            "pot_provider_url": cfg.pot_provider_url,
             "deno": {"present": deno.present, "path": deno.path},
             "ffmpeg": {"present": ffmpeg.present, "path": ffmpeg.path},
             "subtitles_default": cfg.subtitles_default,

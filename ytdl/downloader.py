@@ -98,6 +98,12 @@ _FORBIDDEN_PATTERNS = (
     re.compile(r"HTTP Error 403", re.I),
     re.compile(r"requested format is not available", re.I),
     re.compile(r"no video formats found", re.I),
+    # YouTube's anti-bot interstitial: "Sign in to confirm you're not a bot.
+    # Use --cookies-from-browser or --cookies ...". This is THE canonical
+    # cookie-required signal and is the most common reason a fresh/containerized
+    # install can't download. Key off "not a bot" rather than the surrounding
+    # text because the real message ships a curly apostrophe in "you're".
+    re.compile(r"not a bot", re.I),
 )
 _GEO_PATTERNS = (
     re.compile(r"geo restricted", re.I),
@@ -164,6 +170,16 @@ class DownloadContext:
     cookies_browser: str | None
     on_progress: Callable[[dict[str, Any]], None]
     cancel_flag: Callable[[], bool]
+    # Path to a Netscape-format cookies.txt (yt-dlp's `cookiefile`). This is
+    # the only way to authenticate yt-dlp when there's no local browser cookie
+    # store to read — notably inside Docker, where `cookies_browser` can't
+    # reach the host's Chrome/Firefox profile. Independent of `cookies_browser`;
+    # if both are set, yt-dlp merges cookies from both sources.
+    cookies_file: str | None = None
+    # Base URL of a bgutil PO token provider. When set, yt-dlp mints
+    # Proof-of-Origin tokens through it — needed past YouTube's anti-bot gate
+    # where cookies alone return LOGIN_REQUIRED. See _pot_extractor_args.
+    pot_provider_url: str | None = None
     throttle_interval_s: float = 1.0
     # Languages to request when a job opts into subtitles. Threaded through
     # DownloadContext (rather than _build_ydl_options' signature) so adding
@@ -184,6 +200,21 @@ class DownloadResult:
     uploader: str | None
     duration_s: int | None
     filesize_bytes: int | None
+
+
+def _pot_extractor_args(pot_provider_url: str | None) -> dict:
+    """Build the yt-dlp ``extractor_args`` entry for the bgutil PO token
+    provider, or an empty dict when no provider is configured.
+
+    The CLI form ``--extractor-args "youtubepot-bgutilhttp:base_url=<url>"``
+    maps to this nested dict; yt-dlp expects each arg value as a list. Kept in
+    one place so the download and probe paths stay in sync. The dict is plain
+    JSON (list/str), so it survives serialization to the subprocess probe
+    worker unchanged.
+    """
+    if not pot_provider_url:
+        return {}
+    return {"extractor_args": {"youtubepot-bgutilhttp": {"base_url": [pot_provider_url]}}}
 
 
 def _build_ydl_options(job, ctx: DownloadContext, throttle: ProgressThrottle) -> dict:
@@ -229,6 +260,9 @@ def _build_ydl_options(job, ctx: DownloadContext, throttle: ProgressThrottle) ->
     }
     if ctx.cookies_browser:
         opts["cookiesfrombrowser"] = (ctx.cookies_browser,)
+    if ctx.cookies_file:
+        opts["cookiefile"] = ctx.cookies_file
+    opts.update(_pot_extractor_args(ctx.pot_provider_url))
     # yt-dlp defaults to nooverwrites=True, so a retry of a DONE job whose
     # file is still on disk silently no-ops. The "Re-download" action sets
     # force_overwrite so yt-dlp re-fetches and replaces the file.
@@ -276,6 +310,8 @@ def _build_probe_opts(
     *,
     flat: bool,
     use_playlist: bool,
+    cookies_file: str | None = None,
+    pot_provider_url: str | None = None,
 ) -> dict:
     """Construct the YoutubeDL opts dict shared by probe() and probe_one().
 
@@ -298,6 +334,9 @@ def _build_probe_opts(
         opts["extract_flat"] = "in_playlist"
     if cookies_browser:
         opts["cookiesfrombrowser"] = [cookies_browser]
+    if cookies_file:
+        opts["cookiefile"] = cookies_file
+    opts.update(_pot_extractor_args(pot_provider_url))
     return opts
 
 
@@ -360,6 +399,8 @@ def probe(
     *,
     cookies_browser: str | None = None,
     socket_timeout: int = 30,
+    cookies_file: str | None = None,
+    pot_provider_url: str | None = None,
 ) -> dict:
     """Flat-extract metadata without downloading. Returns yt-dlp's info dict.
 
@@ -385,6 +426,8 @@ def probe(
         socket_timeout,
         flat=True,
         use_playlist=_url_targets_a_playlist(url),
+        cookies_file=cookies_file,
+        pot_provider_url=pot_provider_url,
     )
     return _run_probe_subprocess(url, opts, socket_timeout)
 
@@ -394,6 +437,8 @@ def probe_one(
     *,
     cookies_browser: str | None = None,
     socket_timeout: int = 30,
+    cookies_file: str | None = None,
+    pot_provider_url: str | None = None,
 ) -> dict:
     """Full per-video metadata (title, duration, uploader, thumbnail).
 
@@ -408,6 +453,8 @@ def probe_one(
         socket_timeout,
         flat=False,
         use_playlist=False,
+        cookies_file=cookies_file,
+        pot_provider_url=pot_provider_url,
     )
     return _run_probe_subprocess(url, opts, socket_timeout)
 

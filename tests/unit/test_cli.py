@@ -101,7 +101,7 @@ def test_preview_command_prints_entries(
 ) -> None:
     monkeypatch.setattr(
         "ytdl.downloader.probe",
-        lambda url, cookies_browser=None, socket_timeout=30: {
+        lambda url, **kwargs: {
             "_type": "playlist",
             "title": "PL",
             "entries": [
@@ -125,8 +125,8 @@ def test_preview_command_threads_probe_timeout_from_config(
     monkeypatch.setenv("YTDL_PROBE_TIMEOUT_S", "7")
     seen: dict = {}
 
-    def fake_probe(url, cookies_browser=None, socket_timeout=30):
-        seen["socket_timeout"] = socket_timeout
+    def fake_probe(url, **kwargs):
+        seen["socket_timeout"] = kwargs.get("socket_timeout")
         return {
             "_type": "playlist",
             "title": "PL",
@@ -328,7 +328,7 @@ def test_queue_add_with_pick_only_enqueues_picked(
 ) -> None:
     monkeypatch.setattr(
         "ytdl.downloader.probe",
-        lambda url, cookies_browser=None, socket_timeout=30: {
+        lambda url, **kwargs: {
             "_type": "playlist",
             "title": "PL",
             "entries": [

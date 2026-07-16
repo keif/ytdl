@@ -1,4 +1,13 @@
 # syntax=docker/dockerfile:1.7
+# deno supplies the JS runtime yt-dlp uses to solve YouTube's `n` challenge
+# (EJS remote components). Without it, downloads can fail with "Requested
+# format is not available" even when cookies are valid. Pull the standalone
+# binary from deno's official bin image as a named stage — the version has to
+# interpolate in a FROM line (an ARG inside `COPY --from=` doesn't expand).
+# Bump DENO_VERSION to upgrade; tags: https://hub.docker.com/r/denoland/deno/tags
+ARG DENO_VERSION=2.4.0
+FROM denoland/deno:bin-${DENO_VERSION} AS deno
+
 FROM node:22-alpine AS web-build
 WORKDIR /web
 COPY web/package.json web/pnpm-lock.yaml* ./
@@ -12,6 +21,8 @@ RUN pnpm build
 
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS app
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
+# JS runtime for yt-dlp's n-challenge — see the deno stage at the top.
+COPY --from=deno /deno /usr/local/bin/deno
 WORKDIR /app
 COPY pyproject.toml uv.lock* ./
 RUN uv sync --frozen --no-dev --no-install-project || uv sync --no-dev --no-install-project

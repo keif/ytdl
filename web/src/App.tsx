@@ -641,21 +641,37 @@ export default function App() {
         <div className="text-xs text-neutral-500 flex items-center gap-2 flex-wrap justify-end">
           {status && (
             <>
-              <span
-                title={
-                  status.cookies_source === "autodetect"
+              {(() => {
+                // Cookies can come from a browser store, a cookies.txt file,
+                // or both — they're independent sources. Show whichever are
+                // active so the chip doesn't read "none" when a file is set
+                // (the common Docker case, where no browser is reachable).
+                const parts: string[] = [];
+                if (status.cookies_browser) {
+                  parts.push(
+                    `${status.cookies_browser}${
+                      status.cookies_source === "autodetect" ? " (auto)" : ""
+                    }`,
+                  );
+                }
+                if (status.cookies_file) parts.push("file");
+                const active = parts.length > 0;
+                const title = status.cookies_file
+                  ? `cookies.txt: ${status.cookies_file}`
+                  : status.cookies_source === "autodetect"
                     ? "browser auto-detected at startup"
                     : status.cookies_source === "explicit"
                       ? "from YTDL_COOKIES_BROWSER / config.toml"
-                      : "no browser cookie store found"
-                }
-              >
-                {status.cookies_browser
-                  ? `cookies: ${status.cookies_browser}${
-                      status.cookies_source === "autodetect" ? " (auto)" : ""
-                    }`
-                  : "cookies: none"}
-              </span>
+                      : "no cookies configured — auth-gated content may fail";
+                return (
+                  <span
+                    className={active ? "" : "text-amber-400"}
+                    title={title}
+                  >
+                    {active ? `cookies: ${parts.join(" + ")}` : "cookies: none"}
+                  </span>
+                );
+              })()}
               <span
                 className={status.deno.present ? "" : "text-amber-400"}
                 title={
@@ -676,6 +692,11 @@ export default function App() {
               >
                 ffmpeg: {status.ffmpeg.present ? "✓" : "missing"}
               </span>
+              {status.pot_provider_url && (
+                <span title={`PO token provider: ${status.pot_provider_url}`}>
+                  pot: ✓
+                </span>
+              )}
             </>
           )}
           <span>{sseState}</span>

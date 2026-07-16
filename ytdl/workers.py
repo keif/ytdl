@@ -50,12 +50,21 @@ log = logging.getLogger(__name__)
 Downloader = Callable[[Any, DownloadContext], DownloadResult]
 
 _FORBIDDEN_HINT = (
-    "YouTube returned no usable formats. Two common causes: "
-    "(1) yt-dlp couldn't solve YouTube's `n` challenge — install a JS runtime "
-    "(`brew install deno` on macOS) and restart the server, or "
-    "(2) the request was treated as unauthenticated — run "
-    "`ytdl cookies use <browser>` and restart. "
-    "See https://github.com/yt-dlp/yt-dlp/wiki/EJS for details."
+    "YouTube returned no usable formats or challenged the request as a bot. "
+    "Common causes: "
+    "(1) a Proof-of-Origin (PO) token is required and no provider is "
+    "configured — this is the usual cause when LOGIN_REQUIRED persists even "
+    "with valid cookies; run the bgutil provider and set YTDL_POT_PROVIDER_URL "
+    "(the Docker compose file wires this automatically); "
+    "(2) yt-dlp couldn't solve YouTube's `n` challenge — install a JS runtime "
+    "(`brew install deno` on macOS) and restart the server; "
+    "(3) the request was treated as unauthenticated — on a local install run "
+    "`ytdl cookies use <browser>` and restart; in Docker (no host browser to "
+    "read) export a cookies.txt and set YTDL_COOKIES_FILE (or drop it in "
+    "./data). "
+    "See https://github.com/Brainicism/bgutil-ytdlp-pot-provider, "
+    "https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp, "
+    "and https://github.com/yt-dlp/yt-dlp/wiki/EJS for details."
 )
 
 
@@ -91,6 +100,8 @@ class Supervisor:
         workers: int,
         bus: EventsBus,
         cookies_browser: str | None,
+        cookies_file: str | None = None,
+        pot_provider_url: str | None = None,
         subtitle_langs: tuple[str, ...] | list[str] = ("en",),
         probe_timeout_s: int = 30,
         downloader: Downloader | None = None,
@@ -102,6 +113,8 @@ class Supervisor:
         self._n = workers
         self._bus = bus
         self._cookies = cookies_browser
+        self._cookies_file = cookies_file
+        self._pot_provider_url = pot_provider_url
         self._subtitle_langs: tuple[str, ...] = tuple(subtitle_langs) or ("en",)
         self._probe_timeout_s = probe_timeout_s
         self._download: Downloader = downloader or _default_download_adapter
@@ -109,11 +122,17 @@ class Supervisor:
             self._probe: Callable[[str], dict] = probe
         else:
             _cookies = cookies_browser
+            _cookies_file = cookies_file
+            _pot = pot_provider_url
             _timeout = probe_timeout_s
 
             def _adapter(url: str) -> dict:
                 return _default_probe_adapter(
-                    url, cookies_browser=_cookies, socket_timeout=_timeout
+                    url,
+                    cookies_browser=_cookies,
+                    socket_timeout=_timeout,
+                    cookies_file=_cookies_file,
+                    pot_provider_url=_pot,
                 )
 
             self._probe = _adapter
@@ -550,6 +569,8 @@ class Supervisor:
         ctx = DownloadContext(
             ydl_cls=None,  # set by the default adapter; tests stub the whole callable
             cookies_browser=self._cookies,
+            cookies_file=self._cookies_file,
+            pot_provider_url=self._pot_provider_url,
             on_progress=on_progress,
             cancel_flag=cancel_flag,
             subtitle_langs=self._subtitle_langs,
@@ -700,6 +721,8 @@ def _default_download_adapter(job, ctx: DownloadContext) -> DownloadResult:
     real_ctx = DownloadContext(
         ydl_cls=YoutubeDL,
         cookies_browser=ctx.cookies_browser,
+        cookies_file=ctx.cookies_file,
+        pot_provider_url=ctx.pot_provider_url,
         on_progress=ctx.on_progress,
         cancel_flag=ctx.cancel_flag,
         throttle_interval_s=ctx.throttle_interval_s,
@@ -710,9 +733,20 @@ def _default_download_adapter(job, ctx: DownloadContext) -> DownloadResult:
 
 
 def _default_probe_adapter(
-    url: str, *, cookies_browser: str | None = None, socket_timeout: int = 30
+    url: str,
+    *,
+    cookies_browser: str | None = None,
+    socket_timeout: int = 30,
+    cookies_file: str | None = None,
+    pot_provider_url: str | None = None,
 ) -> dict:
     """Lazy default that delegates to the downloader's probe helper."""
     from ytdl.downloader import probe as _probe
 
-    return _probe(url, cookies_browser=cookies_browser, socket_timeout=socket_timeout)
+    return _probe(
+        url,
+        cookies_browser=cookies_browser,
+        socket_timeout=socket_timeout,
+        cookies_file=cookies_file,
+        pot_provider_url=pot_provider_url,
+    )

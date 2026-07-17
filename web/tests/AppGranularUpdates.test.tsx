@@ -44,6 +44,7 @@ function singleJob(overrides: Record<string, unknown> = {}) {
     video_id: "abc",
     uploader: null,
     duration_s: null,
+    thumbnail_url: null,
     filesize_bytes: 1_000_000,
     bytes_done: 100_000,
     speed_bps: null,

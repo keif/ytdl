@@ -44,6 +44,15 @@ function formatEta(seconds: number | null | undefined): string {
   return `${h}h ${rm.toString().padStart(2, "0")}m`;
 }
 
+function formatDuration(seconds: number | null | undefined): string {
+  if (!seconds || seconds <= 0) return "";
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  if (h > 0) return `${h}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
 function pickTimestamp(job: Job): { label: string; ts: number | null } {
   if (job.status === "done" || job.status === "failed" || job.status === "canceled") {
     if (job.finished_at) return { label: job.status === "done" ? "finished" : job.status, ts: job.finished_at };
@@ -80,15 +89,44 @@ export function JobRow({ job, onCancel, onRetry, onRedownload }: Props) {
   const attempts = job.attempts > 1 ? ` · ${job.attempts} attempts` : "";
   return (
     <li className="flex flex-col gap-1 p-3 border-b border-neutral-800">
-      <div className="flex items-center justify-between">
-        <div className="flex flex-col">
-          <span className="font-medium">{job.title ?? job.url}</span>
-          <span className="text-xs text-neutral-400">{job.url}</span>
-          <time className="text-xs text-neutral-500" dateTime={abs} title={abs}>
-            {label} {rel}{attempts}
-          </time>
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3 min-w-0">
+          {job.thumbnail_url && (
+            // Loads from the source CDN (e.g. i.ytimg.com). Hide on error so a
+            // dead/blocked thumbnail URL doesn't leave a broken-image icon.
+            <img
+              src={job.thumbnail_url}
+              alt=""
+              loading="lazy"
+              className="w-20 h-12 rounded object-cover bg-neutral-800 flex-shrink-0"
+              onError={(e) => {
+                e.currentTarget.style.display = "none";
+              }}
+            />
+          )}
+          <div className="flex flex-col min-w-0">
+            <span className="font-medium truncate">{job.title ?? job.url}</span>
+            {(job.uploader || formatDuration(job.duration_s)) && (
+              <span className="text-xs text-neutral-400 truncate">
+                {[job.uploader, formatDuration(job.duration_s)]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </span>
+            )}
+            {/* Keep the raw URL visible for verification — but only as a
+                secondary line when the title already occupies the primary
+                one, otherwise it would duplicate the title fallback above. */}
+            {job.title && (
+              <span className="text-xs text-neutral-500 truncate">{job.url}</span>
+            )}
+            <time className="text-xs text-neutral-500" dateTime={abs} title={abs}>
+              {label} {rel}{attempts}
+            </time>
+          </div>
         </div>
-        <span className="text-xs uppercase text-neutral-500">{job.status}</span>
+        <span className="text-xs uppercase text-neutral-500 flex-shrink-0">
+          {job.status}
+        </span>
       </div>
       {job.status === "running" && (
         <div className="flex flex-col gap-1 text-xs text-neutral-400">

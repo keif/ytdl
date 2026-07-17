@@ -36,6 +36,10 @@ class Job:
     video_id: str | None = None
     uploader: str | None = None
     duration_s: int | None = None
+    # Thumbnail image URL (from the preview probe). Persisted at enqueue so the
+    # queue row can show the video's image instead of a bare URL. Referenced
+    # directly as an <img src> by the UI — not downloaded/cached.
+    thumbnail_url: str | None = None
     filesize_bytes: int | None = None
     bytes_done: int | None = None
     speed_bps: int | None = None

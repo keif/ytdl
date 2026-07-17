@@ -96,6 +96,9 @@ def test_migrate_v3_to_v4_preserves_existing_rows(tmp_path: Path) -> None:
     conn = connect(db_path)
     migrate(conn)
     conn.execute("DROP TABLE IF EXISTS library_files")
+    # Revert every schema change from migrations after v3 so the DB actually
+    # looks like v3 before we re-run migrate() (thumbnail_url arrived in v5).
+    conn.execute("ALTER TABLE jobs DROP COLUMN thumbnail_url")
     conn.execute("DELETE FROM schema_version")
     conn.execute("INSERT INTO schema_version(version) VALUES (3)")
     conn.execute(
@@ -123,6 +126,9 @@ def test_migrate_v2_to_v3_preserves_existing_rows(tmp_path: Path) -> None:
     migrate(conn)
     # Drop forward state to v2 by clearing the new column + version.
     conn.execute("ALTER TABLE jobs DROP COLUMN subtitles")
+    # Also revert the later migrations' schema (v5 added thumbnail_url) so the
+    # DB truly looks like v2 before re-running migrate().
+    conn.execute("ALTER TABLE jobs DROP COLUMN thumbnail_url")
     conn.execute("DELETE FROM schema_version")
     conn.execute("INSERT INTO schema_version(version) VALUES (2)")
     conn.execute(

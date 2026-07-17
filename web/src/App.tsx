@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   cancelJob,
+  cancelAllJobs,
   clearDoneJobs,
   createJob,
   createJobsFromPick,
@@ -13,6 +14,7 @@ import {
   retryJob,
   type EnrichedEntry,
   type Job,
+  type JobMeta,
   type PreviewResponse,
   type StatusResponse,
 } from "./api";
@@ -415,6 +417,16 @@ export default function App() {
     // would silently use the default directory.
     const snapshotAudioOnly = audioOnly;
     const snapshotOutputDir = outputDir;
+    // Snapshot the preview metadata BEFORE the clear below wipes it, so the
+    // queue row shows the video's image + title immediately instead of a bare
+    // URL. Sourced from the enrich response; when enrich hasn't landed yet
+    // (eager submit) these are null and the worker fills them post-download.
+    const metaSnapshot: JobMeta = {
+      title: singleEnriched?.title ?? null,
+      uploader: singleEnriched?.uploader ?? null,
+      duration_s: singleEnriched?.duration_s ?? null,
+      thumbnail_url: singleEnriched?.thumbnail_url ?? null,
+    };
 
     // Synchronous clear: lets the user paste the next URL while the POST
     // is still in flight. The preview useEffect sees url="" and resets
@@ -451,6 +463,7 @@ export default function App() {
         effectiveSubs,
         effectiveOutputDir,
         opts?.force_overwrite ? { force_overwrite: true } : undefined,
+        metaSnapshot,
       );
     } catch (e) {
       postFailed = true;
@@ -480,7 +493,10 @@ export default function App() {
   // selections, even if they were toggled mid-countdown.
   submitSingleRef.current = submitSingle;
 
-  async function submitPickedUrls(urls: string[]) {
+  async function submitPickedUrls(
+    urls: string[],
+    metaByUrl?: Record<string, JobMeta>,
+  ) {
     setSubmitting(true);
     setSubmitError(null);
     try {
@@ -502,6 +518,7 @@ export default function App() {
         effectiveSubtitles(),
         effectiveOutputDir,
         anyDuplicate ? { force_overwrite: true } : undefined,
+        metaByUrl,
       );
       updateUrl("");
       setAudioOnly(false);
@@ -641,21 +658,37 @@ export default function App() {
         <div className="text-xs text-neutral-500 flex items-center gap-2 flex-wrap justify-end">
           {status && (
             <>
-              <span
-                title={
-                  status.cookies_source === "autodetect"
+              {(() => {
+                // Cookies can come from a browser store, a cookies.txt file,
+                // or both — they're independent sources. Show whichever are
+                // active so the chip doesn't read "none" when a file is set
+                // (the common Docker case, where no browser is reachable).
+                const parts: string[] = [];
+                if (status.cookies_browser) {
+                  parts.push(
+                    `${status.cookies_browser}${
+                      status.cookies_source === "autodetect" ? " (auto)" : ""
+                    }`,
+                  );
+                }
+                if (status.cookies_file) parts.push("file");
+                const active = parts.length > 0;
+                const title = status.cookies_file
+                  ? `cookies.txt: ${status.cookies_file}`
+                  : status.cookies_source === "autodetect"
                     ? "browser auto-detected at startup"
                     : status.cookies_source === "explicit"
                       ? "from YTDL_COOKIES_BROWSER / config.toml"
-                      : "no browser cookie store found"
-                }
-              >
-                {status.cookies_browser
-                  ? `cookies: ${status.cookies_browser}${
-                      status.cookies_source === "autodetect" ? " (auto)" : ""
-                    }`
-                  : "cookies: none"}
-              </span>
+                      : "no cookies configured — auth-gated content may fail";
+                return (
+                  <span
+                    className={active ? "" : "text-amber-400"}
+                    title={title}
+                  >
+                    {active ? `cookies: ${parts.join(" + ")}` : "cookies: none"}
+                  </span>
+                );
+              })()}
               <span
                 className={status.deno.present ? "" : "text-amber-400"}
                 title={
@@ -676,6 +709,11 @@ export default function App() {
               >
                 ffmpeg: {status.ffmpeg.present ? "✓" : "missing"}
               </span>
+              {status.pot_provider_url && (
+                <span title={`PO token provider: ${status.pot_provider_url}`}>
+                  pot: ✓
+                </span>
+              )}
             </>
           )}
           <span>{sseState}</span>
@@ -791,7 +829,7 @@ export default function App() {
         <PreviewPanel
           title={ready.title}
           entries={playlistEntries}
-          onConfirm={(urls) => submitPickedUrls(urls)}
+          onConfirm={(urls, metaByUrl) => submitPickedUrls(urls, metaByUrl)}
           onCancel={() => {
             // The user explicitly dismissed the form. Stale errors from
             // a previous failed submit (single or picker) shouldn't linger
@@ -809,21 +847,52 @@ export default function App() {
 
       {submitError && <p className="text-xs text-red-400">{submitError}</p>}
 
-      {clearable > 0 && (
-        <div className="flex justify-end">
-          <button
-            type="button"
-            className="text-xs text-neutral-400 hover:text-neutral-200 border border-neutral-800 rounded px-2 py-1"
-            onClick={async () => {
-              if (!window.confirm(`Delete ${clearable} done jobs older than 7 days?`)) return;
-              await clearDoneJobs();
-              await refreshAll();
-            }}
-          >
-            Clear {clearable} done job{clearable > 1 ? "s" : ""}
-          </button>
-        </div>
-      )}
+      {(() => {
+        // In-flight = anything not yet terminal. "Cancel all" targets these so
+        // a long wall of opaque pending jobs can be cleared in one click.
+        const activeCount = jobs.filter(
+          (j) =>
+            j.status === "pending"
+            || j.status === "running"
+            || j.status === "canceling",
+        ).length;
+        if (activeCount === 0 && clearable === 0) return null;
+        return (
+          <div className="flex justify-end gap-2">
+            {activeCount > 0 && (
+              <button
+                type="button"
+                className="text-xs text-amber-400 hover:text-amber-300 border border-neutral-800 rounded px-2 py-1"
+                onClick={async () => {
+                  if (
+                    !window.confirm(
+                      `Cancel all ${activeCount} in-flight job${activeCount > 1 ? "s" : ""}?`,
+                    )
+                  )
+                    return;
+                  await cancelAllJobs();
+                  await refreshAll();
+                }}
+              >
+                Cancel all {activeCount}
+              </button>
+            )}
+            {clearable > 0 && (
+              <button
+                type="button"
+                className="text-xs text-neutral-400 hover:text-neutral-200 border border-neutral-800 rounded px-2 py-1"
+                onClick={async () => {
+                  if (!window.confirm(`Delete ${clearable} done jobs older than 7 days?`)) return;
+                  await clearDoneJobs();
+                  await refreshAll();
+                }}
+              >
+                Clear {clearable} done job{clearable > 1 ? "s" : ""}
+              </button>
+            )}
+          </div>
+        );
+      })()}
 
       <JobList
         jobs={jobs}

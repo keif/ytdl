@@ -88,6 +88,13 @@ _MIGRATIONS: dict[int, list[str]] = {
         """,
         "CREATE INDEX IF NOT EXISTS library_files_video_id ON library_files(video_id)",
     ],
+    5: [
+        # Thumbnail image URL captured from the preview probe and stored at
+        # enqueue time, so the queue can render the video's image + metadata
+        # instead of a bare URL that needs manual verification. Nullable:
+        # CLI enqueues and pre-preview jobs simply don't set it.
+        "ALTER TABLE jobs ADD COLUMN thumbnail_url TEXT",
+    ],
 }
 
 

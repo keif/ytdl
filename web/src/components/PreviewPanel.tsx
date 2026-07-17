@@ -2,14 +2,20 @@ import { useEffect, useMemo, useState } from "react";
 import {
   enrichUrls,
   type EnrichedEntry,
+  type JobMeta,
   type PreviewEntry,
 } from "../api";
 
 interface Props {
   title: string | null;
   entries: PreviewEntry[];
-  /** Called with the URLs the user picked (in original playlist order). */
-  onConfirm: (urls: string[]) => Promise<void>;
+  /** Called with the URLs the user picked (in original playlist order) and a
+   * map of per-URL preview metadata (title/uploader/duration/thumbnail) so the
+   * enqueued rows show the video instead of a bare URL. */
+  onConfirm: (
+    urls: string[],
+    metaByUrl: Record<string, JobMeta>,
+  ) => Promise<void>;
   onCancel: () => void;
 }
 
@@ -253,7 +259,22 @@ export function PreviewPanel({ title, entries, onConfirm, onCancel }: Props) {
             setBusy(true);
             setErr(null);
             try {
-              await onConfirm(orderedSelected);
+              // Carry the per-entry metadata we already enriched so each
+              // queued row shows its thumbnail + title. Fall back to the flat
+              // preview title when enrichment hasn't landed for an entry.
+              const picked = new Set(orderedSelected);
+              const metaByUrl: Record<string, JobMeta> = {};
+              for (const entry of entries) {
+                if (!picked.has(entry.url)) continue;
+                const en = enriched.get(entry.url);
+                metaByUrl[entry.url] = {
+                  title: en?.title ?? entry.title ?? null,
+                  uploader: en?.uploader ?? null,
+                  duration_s: en?.duration_s ?? null,
+                  thumbnail_url: en?.thumbnail_url ?? null,
+                };
+              }
+              await onConfirm(orderedSelected, metaByUrl);
             } catch (ex) {
               setErr(ex instanceof Error ? ex.message : "submit failed");
             } finally {

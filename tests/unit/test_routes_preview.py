@@ -46,7 +46,7 @@ def _patch_probe(monkeypatch: pytest.MonkeyPatch, info: dict) -> None:
     """Replace ytdl.api.routes_preview.probe so tests don't hit yt-dlp."""
     monkeypatch.setattr(
         "ytdl.api.routes_preview.probe",
-        lambda url, cookies_browser=None, socket_timeout=30: info,
+        lambda url, **kwargs: info,
     )
 
 
@@ -55,7 +55,7 @@ def _patch_probe_one(
 ) -> None:
     monkeypatch.setattr(
         "ytdl.api.routes_preview.probe_one",
-        lambda url, cookies_browser=None, socket_timeout=30: by_url[url],
+        lambda url, **kwargs: by_url[url],
     )
 
 
@@ -149,7 +149,7 @@ def test_preview_rejects_non_http(client: TestClient) -> None:
 def test_preview_propagates_probe_failure_as_400(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def boom(url: str, cookies_browser: str | None = None, socket_timeout: int = 30) -> dict:
+    def boom(url: str, **kwargs) -> dict:
         raise RuntimeError("nope")
 
     monkeypatch.setattr("ytdl.api.routes_preview.probe", boom)
@@ -195,9 +195,7 @@ def test_enrich_returns_metadata_per_url(
 def test_enrich_individual_failures_surface_in_response(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def fake_probe_one(
-        url: str, cookies_browser: str | None = None, socket_timeout: int = 30
-    ) -> dict:
+    def fake_probe_one(url: str, **kwargs) -> dict:
         if url == "https://x/bad":
             raise RuntimeError("video unavailable")
         return {"title": "ok", "duration": 10, "uploader": "u", "thumbnail": "t"}
@@ -427,7 +425,7 @@ def test_enrich_marks_per_url_timeout_without_failing_batch(
     }
     monkeypatch.setattr(
         "ytdl.api.routes_preview.probe_one",
-        lambda url, cookies_browser=None, socket_timeout=30: good_info,
+        lambda url, **kwargs: good_info,
     )
 
     async def _per_url_to_thread(func, *args, **kwargs):  # type: ignore[no-untyped-def]

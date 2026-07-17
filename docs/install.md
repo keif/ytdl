@@ -132,6 +132,52 @@ Supported values: `chrome`, `firefox`, `safari`, `brave`, `edge`, `chromium`,
 asks for your password. This is normal — yt-dlp needs to decrypt the cookie
 store. Approve once and it remembers.
 
+### Docker / headless: use a cookies.txt file
+
+Browser auto-detect reads a cookie store from local disk, which doesn't exist
+in a container or on a headless server. There `ytdl cookies status` reports
+`none detected`, and YouTube's anti-bot gate fails downloads with
+`Sign in to confirm you're not a bot`. Authenticate with an exported cookies
+file instead.
+
+**Easiest, if a browser on the host is signed in to YouTube** — let yt-dlp
+read its cookie store directly and write the file where it's auto-detected:
+
+```bash
+scripts/export-cookies.sh            # Chrome (default)
+scripts/export-cookies.sh firefox    # or another browser
+```
+
+This writes `docker/data/cookies.txt`, which is bind-mounted to `/data` in
+the container. The app **auto-detects a `cookies.txt` beside its database**,
+so there's nothing else to configure — restart with
+`cd docker && docker compose up -d`.
+
+**Manual / other machine** — export a `cookies.txt` yourself (browser
+extension, yt-dlp's [FAQ](https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp))
+and either drop it in an auto-detect location or point `ytdl` at it:
+
+```bash
+export YTDL_COOKIES_FILE=/path/to/cookies.txt
+```
+
+or in `config.toml`: `cookies_file = "/path/to/cookies.txt"`.
+
+Auto-detect locations (when nothing is pinned): a `cookies.txt` beside the
+database (the `/data` mount) first, then `$XDG_CONFIG_HOME/ytdl/cookies.txt`.
+
+`ytdl cookies status` prints `file: <path>` when a cookies file is active.
+These cookies expire; re-export when the "not a bot" error returns.
+
+**If downloads fail with `LOGIN_REQUIRED` despite a present cookies.txt**, the
+cookies were rotated/invalidated by your live browser session. Re-export from
+an **incognito window** (log in, export with a cookies.txt browser extension,
+then close the window immediately) — the export script reads the on-disk
+profile and can't capture incognito cookies. See **Cookie rotation** in the
+README for the full procedure. YouTube also requires a **PO token** for most
+videos; the Docker compose file wires up a bgutil provider for that — see
+**PO tokens** in the README.
+
 ## Choosing format and output
 
 Three controls in the UI, just under the URL input:

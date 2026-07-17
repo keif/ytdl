@@ -677,16 +677,23 @@ async def test_cancel_during_probe_with_empty_playlist_marks_parent_canceled(
 
 
 def test_default_probe_adapter_forwards_cookies(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The supervisor's default probe path must pass the configured browser and
-    socket timeout through to yt-dlp."""
+    """The supervisor's default probe path must pass the configured browser,
+    cookies file, PO token provider, and socket timeout through to yt-dlp."""
     captured: dict = {}
 
     def fake_probe(
-        url: str, *, cookies_browser: str | None = None, socket_timeout: int = 30
+        url: str,
+        *,
+        cookies_browser: str | None = None,
+        socket_timeout: int = 30,
+        cookies_file: str | None = None,
+        pot_provider_url: str | None = None,
     ) -> dict:
         captured["url"] = url
         captured["cookies_browser"] = cookies_browser
         captured["socket_timeout"] = socket_timeout
+        captured["cookies_file"] = cookies_file
+        captured["pot_provider_url"] = pot_provider_url
         return {"_type": "video"}
 
     import ytdl.downloader
@@ -696,10 +703,16 @@ def test_default_probe_adapter_forwards_cookies(monkeypatch: pytest.MonkeyPatch)
     from ytdl.workers import _default_probe_adapter
 
     _default_probe_adapter(
-        "https://yt/x", cookies_browser="chrome", socket_timeout=45
+        "https://yt/x",
+        cookies_browser="chrome",
+        socket_timeout=45,
+        cookies_file="/cookies.txt",
+        pot_provider_url="http://bgutil-provider:4416",
     )
     assert captured == {
         "url": "https://yt/x",
         "cookies_browser": "chrome",
         "socket_timeout": 45,
+        "cookies_file": "/cookies.txt",
+        "pot_provider_url": "http://bgutil-provider:4416",
     }

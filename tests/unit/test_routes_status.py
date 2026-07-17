@@ -31,6 +31,8 @@ def test_status_returns_cookies_and_runtime_keys(client: TestClient) -> None:
     assert set(body.keys()) == {
         "cookies_browser",
         "cookies_source",
+        "cookies_file",
+        "pot_provider_url",
         "deno",
         "ffmpeg",
         "subtitles_default",

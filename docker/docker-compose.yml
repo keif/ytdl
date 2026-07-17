@@ -10,6 +10,36 @@ services:
       - "8766:8766"
     volumes:
       - ~/Videos/ytdl:/downloads
+      # The container has no host browser for yt-dlp to read cookies from, so
+      # YouTube's anti-bot gate ("Sign in to confirm you're not a bot") needs
+      # an exported cookies.txt. Easiest: run ../scripts/export-cookies.sh —
+      # it writes ./data/cookies.txt, which is auto-detected here (the app
+      # looks for a cookies.txt beside its database in /data). No extra mount
+      # or env var required.
       - ./data:/data
+      # Only if you keep cookies.txt somewhere other than ./data, mount it and
+      # set YTDL_COOKIES_FILE below to override the auto-detect:
+      # - ./cookies.txt:/cookies.txt:ro
     environment:
       - YTDL_WORKERS=2
+      # - YTDL_COOKIES_FILE=/cookies.txt
+      # PO token provider — YouTube now requires a Proof-of-Origin token for
+      # most videos, so cookies alone often return LOGIN_REQUIRED. This points
+      # yt-dlp at the bgutil sidecar below. Reachable by service name on the
+      # compose network.
+      - YTDL_POT_PROVIDER_URL=http://bgutil-provider:4416
+    depends_on:
+      - bgutil-provider
+
+  # bgutil PO token provider: a small HTTP server that mints Proof-of-Origin
+  # tokens for yt-dlp. Keep its image tag's major/minor aligned with the
+  # bgutil-ytdlp-pot-provider plugin version pinned in pyproject.toml.
+  bgutil-provider:
+    image: brainicism/bgutil-ytdlp-pot-provider:1.3.1
+    container_name: ytdl-bgutil-provider
+    restart: unless-stopped
+    init: true
+    # Not published to the host — only the ytdl container needs to reach it
+    # over the compose network. Uncomment to expose for debugging.
+    # ports:
+    #   - "4416:4416"

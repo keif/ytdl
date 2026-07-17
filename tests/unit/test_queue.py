@@ -9,6 +9,7 @@ from ytdl.db import connect, migrate
 from ytdl.models import JobKind, JobStatus
 from ytdl.queue import (
     cancel,
+    cancel_all_active,
     cancel_with_children,
     claim_one,
     enqueue,
@@ -45,6 +46,44 @@ def test_enqueue_creates_pending_job_and_event(tmp_path: Path) -> None:
         "SELECT * FROM events WHERE job_id=?", (job_id,)
     ).fetchone()
     assert evt["kind"] == "enqueued"
+
+
+def test_enqueue_persists_preview_metadata(tmp_path: Path) -> None:
+    """Metadata captured from the preview (title, uploader, duration,
+    thumbnail) must be stored at enqueue time so pending/running rows show
+    the video instead of a bare URL."""
+    conn = _setup(tmp_path)
+    job_id = enqueue(
+        conn,
+        url="https://youtu.be/abc",
+        kind=JobKind.VIDEO,
+        format_pref="best",
+        output_dir="/out",
+        title="Rick Astley - Never Gonna Give You Up",
+        uploader="Rick Astley",
+        duration_s=213,
+        thumbnail_url="https://i.ytimg.com/vi/abc/hqdefault.jpg",
+    )
+    job = get_job(conn, job_id)
+    assert job is not None
+    assert job.title == "Rick Astley - Never Gonna Give You Up"
+    assert job.uploader == "Rick Astley"
+    assert job.duration_s == 213
+    assert job.thumbnail_url == "https://i.ytimg.com/vi/abc/hqdefault.jpg"
+
+
+def test_enqueue_without_metadata_leaves_fields_null(tmp_path: Path) -> None:
+    """Metadata is optional — CLI enqueues and older clients pass nothing, and
+    those rows must still be created with null metadata (worker fills title
+    post-download)."""
+    conn = _setup(tmp_path)
+    job_id = enqueue(
+        conn, url="u", kind=JobKind.VIDEO, format_pref="best", output_dir="/o"
+    )
+    job = get_job(conn, job_id)
+    assert job is not None
+    assert job.title is None
+    assert job.thumbnail_url is None
 
 
 def test_claim_one_returns_oldest_pending_and_marks_running(tmp_path: Path) -> None:
@@ -141,6 +180,114 @@ def test_cancel_running_goes_to_canceling(tmp_path: Path) -> None:
     cancel(conn, job_id)
     row = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
     assert row["status"] == JobStatus.CANCELING
+
+
+def _status(conn, job_id: str) -> str:
+    return conn.execute(
+        "SELECT status FROM jobs WHERE id=?", (job_id,)
+    ).fetchone()["status"]
+
+
+def test_cancel_all_active_cancels_pending_and_running(tmp_path: Path) -> None:
+    """'Cancel all' must flip every in-flight job: pending straight to
+    canceled, running to canceling (worker aborts), and must leave already-
+    terminal jobs (done/failed/canceled) untouched."""
+    conn = _setup(tmp_path)
+    running_id = enqueue(
+        conn, url="r", kind=JobKind.VIDEO, format_pref="best", output_dir="/o"
+    )  # oldest -> claimed
+    claim_one(conn)  # running_id -> RUNNING
+    p1 = enqueue(conn, url="p1", kind=JobKind.VIDEO, format_pref="best", output_dir="/o")
+    p2 = enqueue(conn, url="p2", kind=JobKind.VIDEO, format_pref="best", output_dir="/o")
+    done_id = enqueue(
+        conn, url="d", kind=JobKind.VIDEO, format_pref="best", output_dir="/o"
+    )
+    conn.execute("UPDATE jobs SET status='done' WHERE id=?", (done_id,))
+    conn.commit()
+
+    result = cancel_all_active(conn)
+
+    assert result["canceled"] == 2  # p1, p2
+    assert result["canceling"] == 1  # running_id
+    assert running_id in result["running_ids"]
+    assert _status(conn, p1) == JobStatus.CANCELED
+    assert _status(conn, p2) == JobStatus.CANCELED
+    assert _status(conn, running_id) == JobStatus.CANCELING
+    assert _status(conn, done_id) == JobStatus.DONE  # untouched
+
+
+def test_cancel_all_active_on_empty_queue_returns_zero(tmp_path: Path) -> None:
+    conn = _setup(tmp_path)
+    result = cancel_all_active(conn)
+    assert result["canceled"] == 0
+    assert result["canceling"] == 0
+    assert result["running_ids"] == []
+
+
+def test_cancel_all_active_emits_canceled_events_for_pending(tmp_path: Path) -> None:
+    """Each pending job canceled must record a 'canceled' event so the SSE
+    snapshot / listing reflects the terminal state."""
+    conn = _setup(tmp_path)
+    p = enqueue(conn, url="p", kind=JobKind.VIDEO, format_pref="best", output_dir="/o")
+    cancel_all_active(conn)
+    evt = conn.execute(
+        "SELECT kind FROM events WHERE job_id=? ORDER BY id DESC LIMIT 1", (p,)
+    ).fetchone()
+    assert evt["kind"] == "canceled"
+
+
+def test_cancel_all_finalizes_playlist_parent_with_pending_children(
+    tmp_path: Path,
+) -> None:
+    """A playlist parent has no worker of its own — a reaper finalizes it when
+    its last child finishes. Cancel all terminates all-PENDING children
+    directly, so no child "finishes"; the parent must still be finalized here,
+    not left stuck in CANCELING forever."""
+    conn = _setup(tmp_path)
+    parent = enqueue(
+        conn, url="pl", kind=JobKind.VIDEO, format_pref="best", output_dir="/o"
+    )  # oldest -> claimed -> RUNNING
+    claim_one(conn)
+    promote_to_playlist(conn, parent, title="PL")
+    c1 = enqueue(
+        conn, url="c1", kind=JobKind.VIDEO, format_pref="best",
+        output_dir="/o", parent_job_id=parent,
+    )
+    c2 = enqueue(
+        conn, url="c2", kind=JobKind.VIDEO, format_pref="best",
+        output_dir="/o", parent_job_id=parent,
+    )
+
+    cancel_all_active(conn)
+
+    assert _status(conn, c1) == JobStatus.CANCELED
+    assert _status(conn, c2) == JobStatus.CANCELED
+    assert _status(conn, parent) == JobStatus.CANCELED  # finalized, not stuck
+
+
+def test_cancel_all_leaves_playlist_parent_canceling_when_child_running(
+    tmp_path: Path,
+) -> None:
+    """When a child is still RUNNING (-> CANCELING), that child's worker will
+    finish and the normal reaper finalizes the parent. Cancel all must NOT
+    finalize the parent early in that case."""
+    conn = _setup(tmp_path)
+    parent = enqueue(
+        conn, url="pl", kind=JobKind.VIDEO, format_pref="best", output_dir="/o"
+    )
+    claim_one(conn)  # parent -> RUNNING
+    promote_to_playlist(conn, parent, title="PL")
+    c1 = enqueue(
+        conn, url="c1", kind=JobKind.VIDEO, format_pref="best",
+        output_dir="/o", parent_job_id=parent,
+    )
+    conn.execute("UPDATE jobs SET status='running' WHERE id=?", (c1,))
+    conn.commit()
+
+    cancel_all_active(conn)
+
+    assert _status(conn, c1) == JobStatus.CANCELING  # worker will finish it
+    assert _status(conn, parent) == JobStatus.CANCELING  # reaper finalizes later
 
 
 def test_cancel_with_children_no_children(tmp_path: Path) -> None:

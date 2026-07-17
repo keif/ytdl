@@ -56,6 +56,8 @@ ytdl reads configuration from, in order of precedence:
 | SQLite path | `YTDL_DB_PATH` | `db_path` | `$XDG_DATA_HOME/ytdl/ytdl.db` | Job queue + event log. |
 | Worker count | `YTDL_WORKERS` | `workers` | `2` | Concurrent downloads. |
 | Cookie browser | `YTDL_COOKIES_BROWSER` | `cookies_browser` | auto-detected | Set explicitly to override. Supported: `chrome`, `firefox`, `brave`, `edge`, `safari`, `opera`, `vivaldi`, `chromium`. See **Authentication** below. |
+| Cookie file | `YTDL_COOKIES_FILE` | `cookies_file` | unset | Path to an exported `cookies.txt` (Netscape format). The authentication path for Docker, where no host browser is reachable. `~` is expanded. See **Authentication** below. |
+| PO token provider | `YTDL_POT_PROVIDER_URL` | `pot_provider_url` | unset | Base URL of a bgutil PO token provider (e.g. `http://bgutil-provider:4416`). Required when YouTube demands a Proof-of-Origin token and cookies alone return `LOGIN_REQUIRED`. Wired automatically by the Docker compose file. See **PO tokens** below. |
 | Default format | `YTDL_DEFAULT_FORMAT` | `default_format` | `best` | `best`, `1080p`, `720p`, `audio_only`, or any raw yt-dlp format string. |
 | Log level | `YTDL_LOG_LEVEL` | `log_level` | `INFO` | Passed to uvicorn by `ytdl serve`. `dev.sh` and the Docker CMD invoke uvicorn directly and ignore this value. |
 
@@ -87,6 +89,62 @@ Override the auto-pick explicitly:
 
 If a download fails with `Sign in to confirm your age` or `Private video`, the chosen browser isn't signed in to YouTube. Switch to one that is.
 
+### Cookies in Docker (`cookies.txt`)
+
+The browser auto-detect above reads a cookie store from local disk. **Inside a container there is no host browser to read**, so `cookies_browser` can't help — `ytdl cookies status` will report `none detected`, and YouTube's anti-bot gate fails downloads with `Sign in to confirm you're not a bot`. Authenticate with an exported `cookies.txt` instead.
+
+**Easiest path — one command.** If a browser on the host is signed in to YouTube, `yt-dlp` can read its cookie store directly. A helper script does this and writes the file to the location the container auto-detects:
+
+    scripts/export-cookies.sh            # Chrome (default)
+    scripts/export-cookies.sh firefox    # or another browser
+    cd docker && docker compose up -d    # restart to pick it up
+
+The script writes `docker/data/cookies.txt`. Because `docker/data` is already bind-mounted to `/data` (where the database lives), the app **auto-detects `cookies.txt` beside its database** — no compose edits, no env var. Confirm with `ytdl cookies status` (prints `file: /data/cookies.txt`). On macOS the first read of a Chromium-family store pops a Keychain prompt; approve it. Firefox has no prompt.
+
+**Manual path.** If you'd rather export cookies yourself (browser extension, another machine), drop the file at `docker/data/cookies.txt` and it's auto-detected the same way. To use a path *other* than the auto-detected ones, set `YTDL_COOKIES_FILE` explicitly — `docker/docker-compose.yml` ships a mount + env var pre-wired behind comments for that case.
+
+**Auto-detect locations** (used when `YTDL_COOKIES_FILE` / `cookies_file` is unset): a `cookies.txt` beside the database (the `/data` mount in Docker) is checked first, then `$XDG_CONFIG_HOME/ytdl/cookies.txt`. First one found wins.
+
+`cookies_file` works outside Docker too — set `YTDL_COOKIES_FILE` or `cookies_file` in `config.toml`, or just drop a `cookies.txt` in one of the auto-detect locations. If both a browser and a file are configured, yt-dlp merges cookies from both sources.
+
+YouTube's anti-bot cookies are short-lived — when downloads start failing again with the same "not a bot" message, re-export a fresh file.
+
+#### Cookie rotation — export from an incognito window
+
+`scripts/export-cookies.sh` reads your **live browser profile**, and that's fragile: YouTube continuously rotates the session token (`__Secure-1PSIDTS`) on any active session, so the copy you exported gets invalidated as soon as the browser keeps running. The symptom is downloads failing with **`LOGIN_REQUIRED`** on every player client even though `cookies.txt` is present and full of YouTube cookies — the cookies are there, YouTube just no longer honors them.
+
+The reliable fix is to export from a **private/incognito window and close it immediately**, so nothing can rotate the session afterward:
+
+1. Open a **private/incognito** window and log into YouTube.
+2. Open a new tab in that window and go to `youtube.com` (ensures the cookies are set).
+3. Export `cookies.txt` **from that incognito window** using a browser extension such as [Get cookies.txt LOCALLY](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc). The `export-cookies.sh` script **cannot** do this — incognito cookies live in memory, not the on-disk store `--cookies-from-browser` reads.
+4. **Close the incognito window immediately** (this is the key step — it stops the session from rotating and invalidating what you just exported).
+5. Save the file as `docker/data/cookies.txt` and run `cd docker && docker compose up -d`.
+
+A throwaway/secondary Google account is worth using here — YouTube can flag or rate-limit accounts used for automated downloading, and you don't want that to be your primary account. See the yt-dlp [FAQ](https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp) and [exporting YouTube cookies](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies).
+
+> **Note on rate-limiting (HTTP 429).** Repeated failed attempts from one IP get that IP temporarily throttled, which then causes `LOGIN_REQUIRED`/bot errors regardless of cookie validity and muddies diagnosis. If you hit 429, stop and wait (30+ minutes) before retrying with fresh cookies.
+
+## PO tokens (`bgutil` provider)
+
+As of 2026, YouTube requires a **Proof-of-Origin (PO) token** for most videos *in addition to* cookies. There are two independent gates, and both must pass:
+
+1. **Session auth** — your cookies must be accepted. If they're rejected (stale/rotated), every player client returns `LOGIN_REQUIRED` at the *playability* stage and yt-dlp never even reaches the streaming step. Fix: valid cookies (see [Cookie rotation](#cookie-rotation--export-from-an-incognito-window) above).
+2. **Proof-of-Origin** — the *streaming* URLs require a PO token. Without a provider, a verbose probe shows `PO Token Providers: none` and downloads fail with "Sign in to confirm you're not a bot" even when auth passed. Fix: the bgutil provider below.
+
+Because both surface as `LOGIN_REQUIRED` / "not a bot", tell them apart with a verbose probe (`yt-dlp -v ...`): `playability status: LOGIN_REQUIRED` on the clients points at **cookies**; reaching formats but failing with `PO Token Providers: none` points at the **PO token**.
+
+The fix is the [bgutil PO token provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider): a small HTTP server that mints tokens, plus a yt-dlp plugin that consumes them. Both are already wired into this project:
+
+- The plugin (`bgutil-ytdlp-pot-provider`) ships as an app dependency, so yt-dlp auto-discovers it.
+- `docker/docker-compose.yml` runs the provider as a `bgutil-provider` sidecar and sets `YTDL_POT_PROVIDER_URL=http://bgutil-provider:4416` on the app container.
+
+So with the Docker setup there's **nothing to configure** — `docker compose up -d --build` brings up both services and downloads mint PO tokens automatically. The header shows a `pot: ✓` chip when a provider is configured. Pair it with a cookies file (above) for the most reliable combination.
+
+**Version alignment:** keep the sidecar image tag in `docker-compose.yml` and the plugin pin in `pyproject.toml` on the same major/minor (both `1.3.x` today).
+
+**Running outside Docker?** Start the provider yourself (`docker run --name bgutil-provider -d --init -p 4416:4416 brainicism/bgutil-ytdlp-pot-provider:1.3.1`) and set `YTDL_POT_PROVIDER_URL=http://127.0.0.1:4416`.
+
 ## yt-dlp's JS runtime (recommended)
 
 YouTube sometimes wraps format URLs with an obfuscated JavaScript `n` parameter that yt-dlp has to solve to get a usable URL. ytdl opts into yt-dlp's `ejs:github` remote components, so on first run the EJS solver script is fetched from GitHub and cached — no manual installation needed, but you do need a JS runtime for yt-dlp to execute the solver.
@@ -103,6 +161,8 @@ Confirm it's on `PATH`:
 yt-dlp picks it up automatically. Without a runtime you'll see `n challenge solving failed: Some formats may be missing` and the job may fail with `Requested format is not available`. See yt-dlp's [EJS wiki page](https://github.com/yt-dlp/yt-dlp/wiki/EJS) for background.
 
 **If a download fails with `[forbidden] ... Requested format is not available`**, the n-challenge didn't solve. Almost always: install deno and restart serve. Less often: the chosen browser isn't signed in (`ytdl cookies use <browser>`). The error message in the UI suggests both.
+
+**If a download fails with `[forbidden] ... Sign in to confirm you're not a bot`**, YouTube served its anti-bot gate and the request was unauthenticated. On a local install, point ytdl at a signed-in browser (`ytdl cookies use <browser>`). In Docker there's no host browser to read — supply an exported `cookies.txt` instead (see [Cookies in Docker](#cookies-in-docker-cookiestxt)).
 
 ## Commands
 
@@ -125,8 +185,9 @@ yt-dlp picks it up automatically. Without a runtime you'll see `n challenge solv
                             # Delete DONE jobs older than --older-than-days
                             # (default 7). Failed/canceled rows stay so you
                             # can triage them.
-    ytdl cookies status     # Print the browser ytdl will use (auto-detected
-                            # or explicit).
+    ytdl cookies status     # Print the cookie sources ytdl will use — the
+                            # browser (auto-detected or explicit) and/or the
+                            # configured cookies.txt file.
     ytdl cookies use <browser>
                             # Persist a browser choice for auth.
 
@@ -136,10 +197,11 @@ When `ytdl serve` is running, the API surface is:
 
 | Method | Path | Body / params | Purpose |
 |---|---|---|---|
-| `POST` | `/jobs` | `{url, format_pref?}` OR `{urls: [...], format_pref?}` | Enqueue a single URL or an array of URLs from a playlist subset. With `urls`, each URL becomes a standalone VIDEO job (no synthetic playlist parent). Returns the new job row. |
+| `POST` | `/jobs` | `{url, format_pref?}` OR `{urls: [...], format_pref?}`; optional `metadata` map keyed by URL (`{title?, uploader?, duration_s?, thumbnail_url?}`) | Enqueue a single URL or an array of URLs from a playlist subset. With `urls`, each URL becomes a standalone VIDEO job (no synthetic playlist parent). `metadata` (from the preview) is persisted so the queue shows the thumbnail + title instead of a bare URL. Returns the new job row. |
 | `GET` | `/jobs` | `?status=&limit=200&offset=0` | List jobs (DESC by `created_at`). |
 | `GET` | `/jobs/{id}` | — | Single job. 404 if unknown. |
 | `DELETE` | `/jobs/{id}` | — | Cancel a job. For a playlist parent, cascades to all children. Returns 204. |
+| `POST` | `/jobs/cancel-all` | — | Cancel every in-flight job at once — pending go straight to canceled, running are asked to stop. Returns `{canceled, canceling}`. |
 | `POST` | `/jobs/{id}/retry` | — | Create a new PENDING job from a failed/canceled/done one. 400 if not in a retryable state. |
 | `GET` | `/jobs/clear/preview` | `?older_than_days=7` | Count of DONE jobs that would be deleted. |
 | `POST` | `/jobs/clear` | `?older_than_days=7` | Delete DONE jobs older than the threshold. Failed/canceled stay; children of retained parents stay. Returns `{deleted}`. |
@@ -147,7 +209,7 @@ When `ytdl serve` is running, the API surface is:
 | `POST` | `/preview/enrich` | `{urls: [...]}` | Per-URL full probe in parallel (capped at 20 URLs per call, 5 concurrent). Returns `{entries: [{title, duration_s, uploader, thumbnail_url}]}`. |
 | `GET` | `/events` | — | Server-Sent Events stream: snapshot, then live lifecycle + progress. Persisted events carry an `id:` so `Last-Event-ID` reconnect replay works. Progress frames are unindexed (they aren't persisted; the next snapshot recovers state). |
 | `GET` | `/library` | `?subdir=...` | List files under `output_dir`. Path traversal returns 400. |
-| `GET` | `/status` | — | Returns `{cookies_browser, cookies_source}` (`source` is `"explicit"`, `"autodetect"`, or `"none"`). |
+| `GET` | `/status` | — | Returns `{cookies_browser, cookies_source, cookies_file, pot_provider_url, ...}` (`source` is `"explicit"`, `"autodetect"`, or `"none"`; `cookies_file` / `pot_provider_url` are the configured values or `null`). |
 | `GET` | `/` | — | Built web UI (only present when `ytdl/web/` exists from a `pnpm build`). |
 
 URL validation rejects non-`http(s)` schemes (`javascript:`, `file:`, etc.) with 422.

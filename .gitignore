@@ -24,3 +24,7 @@ web/tsconfig.tsbuildinfo
 *.db-shm
 .env
 ytdl/web/
+
+# Exported browser cookies — contain live auth tokens, never commit
+cookies.txt
+**/cookies.txt

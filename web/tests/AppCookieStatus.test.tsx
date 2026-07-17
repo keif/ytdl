@@ -70,6 +70,120 @@ describe("App cookies status", () => {
   });
 });
 
+describe("App cookies status with a cookies file", () => {
+  let originalFetch: typeof globalThis.fetch;
+
+  function mockStatus(status: Record<string, unknown>) {
+    (globalThis as unknown as { EventSource: unknown }).EventSource = class {
+      onmessage?: (e: MessageEvent) => void;
+      onopen?: () => void;
+      onerror?: () => void;
+      constructor(_url: string) {}
+      close() {}
+    };
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const path =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      if (path === "/jobs" || path.startsWith("/jobs?")) {
+        return new Response(JSON.stringify({ jobs: [], total: 0 }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (path === "/status") {
+        return new Response(JSON.stringify(status), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    }) as unknown as typeof globalThis.fetch;
+  }
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("shows 'cookies: file' when only a cookies file is active (Docker case)", async () => {
+    // The bug: a cookies.txt is configured but no browser store is reachable,
+    // so cookies_browser is null / cookies_source is "none". The chip must
+    // reflect the file rather than falsely reading "cookies: none".
+    mockStatus({
+      cookies_browser: null,
+      cookies_source: "none",
+      cookies_file: "/data/cookies.txt",
+      deno: { present: true, path: "/usr/local/bin/deno" },
+      ffmpeg: { present: true, path: "/usr/bin/ffmpeg" },
+      subtitles_default: false,
+      probe_timeout_s: 30,
+    });
+    render(<App />);
+    await waitFor(() =>
+      expect(screen.getByText("cookies: file")).toBeInTheDocument(),
+    );
+    expect(screen.queryByText("cookies: none")).not.toBeInTheDocument();
+  });
+
+  it("shows a 'pot: ✓' chip when a PO token provider is configured", async () => {
+    mockStatus({
+      cookies_browser: null,
+      cookies_source: "none",
+      cookies_file: "/data/cookies.txt",
+      pot_provider_url: "http://bgutil-provider:4416",
+      deno: { present: true, path: "/usr/local/bin/deno" },
+      ffmpeg: { present: true, path: "/usr/bin/ffmpeg" },
+      subtitles_default: false,
+      probe_timeout_s: 30,
+    });
+    render(<App />);
+    await waitFor(() =>
+      expect(screen.getByText("pot: ✓")).toBeInTheDocument(),
+    );
+  });
+
+  it("omits the pot chip when no provider is configured", async () => {
+    mockStatus({
+      cookies_browser: "chrome",
+      cookies_source: "autodetect",
+      cookies_file: null,
+      pot_provider_url: null,
+      deno: { present: true, path: "/usr/local/bin/deno" },
+      ffmpeg: { present: true, path: "/usr/bin/ffmpeg" },
+      subtitles_default: false,
+      probe_timeout_s: 30,
+    });
+    render(<App />);
+    await waitFor(() =>
+      expect(screen.getByText("cookies: chrome (auto)")).toBeInTheDocument(),
+    );
+    expect(screen.queryByText("pot: ✓")).not.toBeInTheDocument();
+  });
+
+  it("shows both sources when a browser and a file are active", async () => {
+    mockStatus({
+      cookies_browser: "firefox",
+      cookies_source: "explicit",
+      cookies_file: "/data/cookies.txt",
+      deno: { present: true, path: "/usr/local/bin/deno" },
+      ffmpeg: { present: true, path: "/usr/bin/ffmpeg" },
+      subtitles_default: false,
+      probe_timeout_s: 30,
+    });
+    render(<App />);
+    await waitFor(() =>
+      expect(screen.getByText("cookies: firefox + file")).toBeInTheDocument(),
+    );
+  });
+});
+
 describe("App runtime missing-binary warnings", () => {
   let originalFetch: typeof globalThis.fetch;
 

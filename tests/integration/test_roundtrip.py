@@ -79,7 +79,7 @@ async def test_post_then_bus_then_finished(
     monkeypatch.setattr(
         wm,
         "_default_probe_adapter",
-        lambda url, *, cookies_browser=None, socket_timeout=30: {"_type": "video"},
+        lambda url, **kwargs: {"_type": "video"},
     )
 
     app = build_app(_config(tmp_path))

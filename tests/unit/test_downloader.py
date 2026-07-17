@@ -104,6 +104,19 @@ def test_classify_no_video_formats_as_forbidden() -> None:
     )
 
 
+def test_classify_not_a_bot_as_forbidden() -> None:
+    """YouTube's anti-bot challenge ('Sign in to confirm you're not a bot') is
+    the canonical cookie-required signal. It must classify as FORBIDDEN so the
+    worker surfaces the cookie-setup hint rather than a dead-end [permanent]
+    error. The real message ships a curly apostrophe, so the pattern keys off
+    'not a bot' rather than the quote."""
+    msg = (
+        "Sign in to confirm you’re not a bot. Use --cookies-from-browser "
+        "or --cookies for the authentication."
+    )
+    assert classify_error(_err(msg)) == Classification.FORBIDDEN
+
+
 def test_classify_country_unavailability_as_geo_not_forbidden() -> None:
     """Country-only block (no 403, no format issue) is geo-blocked, not
     forbidden. Cookies don't fix it."""
@@ -232,6 +245,132 @@ def test_download_progress_hook_fires_through_throttle(tmp_path: Path) -> None:
     # At least the first call goes through; throttle off means all do.
     assert len(captured) >= 1
     assert captured[0]["status"] == "downloading"
+
+
+def test_build_ydl_options_sets_cookiefile_when_configured(tmp_path: Path) -> None:
+    """A cookies.txt file (yt-dlp's `cookiefile`) is the only way to
+    authenticate in Docker, where no host browser cookie store is reachable.
+    When set on the context it must reach yt-dlp's opts."""
+    from ytdl.downloader import _build_ydl_options
+
+    job = _make_job(tmp_path)
+    ctx = DownloadContext(
+        ydl_cls=None,
+        cookies_browser=None,
+        cookies_file="/cookies.txt",
+        on_progress=lambda d: None,
+        cancel_flag=lambda: False,
+    )
+    opts = _build_ydl_options(job, ctx, ProgressThrottle())
+    assert opts["cookiefile"] == "/cookies.txt"
+
+
+def test_build_ydl_options_omits_cookiefile_when_unset(tmp_path: Path) -> None:
+    """No cookies file configured -> yt-dlp opts must not carry a `cookiefile`
+    key (an empty/None value would make yt-dlp try to open it and error)."""
+    from ytdl.downloader import _build_ydl_options
+
+    job = _make_job(tmp_path)
+    ctx = DownloadContext(
+        ydl_cls=None,
+        cookies_browser=None,
+        on_progress=lambda d: None,
+        cancel_flag=lambda: False,
+    )
+    opts = _build_ydl_options(job, ctx, ProgressThrottle())
+    assert "cookiefile" not in opts
+
+
+def test_build_probe_opts_sets_cookiefile_when_configured() -> None:
+    """The probe path must honor the same cookies file as the download path,
+    so preview/enrich in Docker can get past the anti-bot gate too."""
+    from ytdl.downloader import _build_probe_opts
+
+    opts = _build_probe_opts(
+        "https://youtu.be/abc",
+        None,
+        30,
+        flat=True,
+        use_playlist=False,
+        cookies_file="/cookies.txt",
+    )
+    assert opts["cookiefile"] == "/cookies.txt"
+
+
+def test_build_probe_opts_omits_cookiefile_when_unset() -> None:
+    from ytdl.downloader import _build_probe_opts
+
+    opts = _build_probe_opts(
+        "https://youtu.be/abc",
+        None,
+        30,
+        flat=True,
+        use_playlist=False,
+    )
+    assert "cookiefile" not in opts
+
+
+def test_build_ydl_options_sets_pot_provider_extractor_args(tmp_path: Path) -> None:
+    """When a PO token provider URL is configured, yt-dlp opts must carry the
+    bgutil HTTP provider base_url so it can mint Proof-of-Origin tokens — the
+    only way past YouTube's anti-bot gate once cookies alone stop working."""
+    from ytdl.downloader import _build_ydl_options
+
+    job = _make_job(tmp_path)
+    ctx = DownloadContext(
+        ydl_cls=None,
+        cookies_browser=None,
+        pot_provider_url="http://bgutil-provider:4416",
+        on_progress=lambda d: None,
+        cancel_flag=lambda: False,
+    )
+    opts = _build_ydl_options(job, ctx, ProgressThrottle())
+    assert opts["extractor_args"]["youtubepot-bgutilhttp"]["base_url"] == [
+        "http://bgutil-provider:4416"
+    ]
+
+
+def test_build_ydl_options_omits_extractor_args_without_pot(tmp_path: Path) -> None:
+    """No provider configured -> no extractor_args key, so installs without a
+    PO token sidecar behave exactly as before."""
+    from ytdl.downloader import _build_ydl_options
+
+    job = _make_job(tmp_path)
+    ctx = DownloadContext(
+        ydl_cls=None,
+        cookies_browser=None,
+        on_progress=lambda d: None,
+        cancel_flag=lambda: False,
+    )
+    opts = _build_ydl_options(job, ctx, ProgressThrottle())
+    assert "extractor_args" not in opts
+
+
+def test_build_probe_opts_sets_pot_provider_extractor_args() -> None:
+    """The probe path needs the PO token provider too — preview/enrich hit the
+    same anti-bot gate as the download."""
+    from ytdl.downloader import _build_probe_opts
+
+    opts = _build_probe_opts(
+        "https://youtu.be/abc",
+        None,
+        30,
+        flat=True,
+        use_playlist=False,
+        pot_provider_url="http://bgutil-provider:4416",
+    )
+    assert opts["extractor_args"]["youtubepot-bgutilhttp"]["base_url"] == [
+        "http://bgutil-provider:4416"
+    ]
+
+
+def test_build_probe_opts_omits_extractor_args_without_pot() -> None:
+    from ytdl.downloader import _build_probe_opts
+
+    opts = _build_probe_opts(
+        "https://youtu.be/abc", None, 30, flat=True, use_playlist=False
+    )
+    assert "extractor_args" not in opts
 
 
 def test_build_ydl_options_sets_noplaylist_for_plain_video(tmp_path: Path) -> None:

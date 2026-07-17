@@ -314,10 +314,12 @@ def test_autosubmit_delay_loads_from_toml(tmp_data_dir: Path) -> None:
     assert cfg.autosubmit_delay_s == 7
 
 
-def test_probe_timeout_defaults_to_thirty(tmp_data_dir: Path) -> None:
-    """No env, no TOML — the dataclass default (30s) flows through."""
+def test_probe_timeout_defaults_to_sixty(tmp_data_dir: Path) -> None:
+    """No env, no TOML — the dataclass default (60s) flows through. Bumped from
+    30s: probes now do a live browser-cookie read (~5s via Keychain on macOS)
+    and, with a PO token provider, token minting, so 30s was too tight."""
     cfg = load_config()
-    assert cfg.probe_timeout_s == 30
+    assert cfg.probe_timeout_s == 60
 
 
 def test_probe_timeout_env_override(

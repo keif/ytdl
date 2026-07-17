@@ -53,9 +53,9 @@ def test_status_returns_cookies_and_runtime_keys(client: TestClient) -> None:
     # Default in Config() is 5 — assert exactly so a future change to the
     # default is caught here.
     assert body["autosubmit_delay_s"] == 5
-    # Default probe timeout — 30s. Catches accidental default drift.
+    # Default probe timeout — 60s. Catches accidental default drift.
     assert isinstance(body["probe_timeout_s"], int)
-    assert body["probe_timeout_s"] == 30
+    assert body["probe_timeout_s"] == 60
     # Duplicate-detection surface. Default `dedup_enabled=True` and empty
     # `library_scan_dirs` fall back to `[str(output_dir)]` — the resolved
     # list is what /status reports so the client sees exactly what gets

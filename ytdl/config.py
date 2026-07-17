@@ -67,9 +67,13 @@ class Config:
     #      if yt-dlp ignores socket_timeout on some code path.
     #   3. asyncio.wait_for around to_thread (= socket_timeout + 10) covers the
     #      subprocess startup window.
-    # A normal probe takes 1-3s; 30s is the "something is very wrong" cliff.
+    # A bare probe is 1-3s, but a probe that reads live browser cookies pays a
+    # ~5s Keychain-decrypt tax on macOS (and that read contends under the
+    # enrich path's concurrency), and a PO-token provider adds token-minting
+    # latency on top. 60s is the "something is very wrong" cliff with that
+    # headroom; 30s (the old value) tripped on legitimately-slow probes.
     # See downloader.probe / routes_preview / ytdl._probe_worker.
-    probe_timeout_s: int = 30
+    probe_timeout_s: int = 60
     # Directories that ytdl.library.scan_directories walks to build the
     # duplicate-detection index. Empty tuple = fall back to (output_dir,) so
     # a fresh install with no explicit config still gets duplicate detection
@@ -298,7 +302,7 @@ def load_config() -> Config:
     # Coerce probe_timeout_s carefully — TOML may hand us a string, env
     # parsing above already int-coerced. A 0/negative value would mean
     # "give up immediately"; that's never what the user wants, so reject.
-    raw_probe = raw.get("probe_timeout_s", 30)
+    raw_probe = raw.get("probe_timeout_s", 60)
     try:
         probe_timeout_s = int(raw_probe)
     except (TypeError, ValueError) as exc:

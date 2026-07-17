@@ -19,6 +19,7 @@ export interface Job {
   video_id: string | null;
   uploader: string | null;
   duration_s: number | null;
+  thumbnail_url: string | null;
   filesize_bytes: number | null;
   bytes_done: number | null;
   speed_bps: number | null;
@@ -57,12 +58,32 @@ export interface CreateJobOptions {
   force_overwrite?: boolean;
 }
 
+/** Preview-derived metadata persisted on the job so the queue row can show the
+ * video's image + title instead of a bare URL. All fields optional. */
+export interface JobMeta {
+  title?: string | null;
+  uploader?: string | null;
+  duration_s?: number | null;
+  thumbnail_url?: string | null;
+}
+
+/** Drop null/undefined fields so we don't send an all-null metadata object. */
+function hasMeta(m: JobMeta): boolean {
+  return (
+    m.title != null
+    || m.uploader != null
+    || m.duration_s != null
+    || m.thumbnail_url != null
+  );
+}
+
 export async function createJob(
   url: string,
   formatPref?: string,
   subtitles?: boolean,
   outputDir?: string,
   opts?: CreateJobOptions,
+  meta?: JobMeta,
 ): Promise<Job> {
   const body: Record<string, unknown> = { url, format_pref: formatPref };
   // Only send the field when the caller passed an explicit value — the
@@ -70,6 +91,9 @@ export async function createJob(
   if (subtitles !== undefined) body.subtitles = subtitles;
   if (outputDir !== undefined) body.output_dir = outputDir;
   if (opts?.force_overwrite) body.force_overwrite = true;
+  // Metadata is keyed by URL server-side so the same shape covers single +
+  // batch enqueues. Only include it when there's something to persist.
+  if (meta && hasMeta(meta)) body.metadata = { [url]: meta };
   const r = await fetch("/jobs", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -98,11 +122,18 @@ export async function createJobsFromPick(
   subtitles?: boolean,
   outputDir?: string,
   opts?: CreateJobOptions,
+  metaByUrl?: Record<string, JobMeta>,
 ): Promise<Job> {
   const body: Record<string, unknown> = { urls, format_pref: formatPref };
   if (subtitles !== undefined) body.subtitles = subtitles;
   if (outputDir !== undefined) body.output_dir = outputDir;
   if (opts?.force_overwrite) body.force_overwrite = true;
+  if (metaByUrl) {
+    const filtered = Object.fromEntries(
+      Object.entries(metaByUrl).filter(([, m]) => hasMeta(m)),
+    );
+    if (Object.keys(filtered).length > 0) body.metadata = filtered;
+  }
   const r = await fetch("/jobs", {
     method: "POST",
     headers: { "content-type": "application/json" },

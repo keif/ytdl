@@ -33,6 +33,7 @@ def _row_to_job(row: sqlite3.Row) -> Job:
         video_id=row["video_id"],
         uploader=row["uploader"],
         duration_s=row["duration_s"],
+        thumbnail_url=row["thumbnail_url"],
         filesize_bytes=row["filesize_bytes"],
         bytes_done=row["bytes_done"],
         speed_bps=row["speed_bps"],
@@ -70,14 +71,19 @@ def enqueue(
     parent_job_id: str | None = None,
     force_overwrite: bool = False,
     subtitles: bool = False,
+    title: str | None = None,
+    uploader: str | None = None,
+    duration_s: int | None = None,
+    thumbnail_url: str | None = None,
 ) -> str:
     job_id = new_ulid()
     conn.execute(
         """
         INSERT INTO jobs(
             id, url, kind, parent_job_id, status, format_pref, output_dir,
-            attempts, created_at, force_overwrite, subtitles
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+            attempts, created_at, force_overwrite, subtitles,
+            title, uploader, duration_s, thumbnail_url
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             job_id,
@@ -90,6 +96,10 @@ def enqueue(
             _now_ms(),
             int(force_overwrite),
             int(subtitles),
+            title,
+            uploader,
+            duration_s,
+            thumbnail_url,
         ),
     )
     record_event(conn, job_id, "enqueued", {"url": url, "kind": kind.value})

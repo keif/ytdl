@@ -13,6 +13,7 @@ import {
   retryJob,
   type EnrichedEntry,
   type Job,
+  type JobMeta,
   type PreviewResponse,
   type StatusResponse,
 } from "./api";
@@ -415,6 +416,16 @@ export default function App() {
     // would silently use the default directory.
     const snapshotAudioOnly = audioOnly;
     const snapshotOutputDir = outputDir;
+    // Snapshot the preview metadata BEFORE the clear below wipes it, so the
+    // queue row shows the video's image + title immediately instead of a bare
+    // URL. Sourced from the enrich response; when enrich hasn't landed yet
+    // (eager submit) these are null and the worker fills them post-download.
+    const metaSnapshot: JobMeta = {
+      title: singleEnriched?.title ?? null,
+      uploader: singleEnriched?.uploader ?? null,
+      duration_s: singleEnriched?.duration_s ?? null,
+      thumbnail_url: singleEnriched?.thumbnail_url ?? null,
+    };
 
     // Synchronous clear: lets the user paste the next URL while the POST
     // is still in flight. The preview useEffect sees url="" and resets
@@ -451,6 +462,7 @@ export default function App() {
         effectiveSubs,
         effectiveOutputDir,
         opts?.force_overwrite ? { force_overwrite: true } : undefined,
+        metaSnapshot,
       );
     } catch (e) {
       postFailed = true;
@@ -480,7 +492,10 @@ export default function App() {
   // selections, even if they were toggled mid-countdown.
   submitSingleRef.current = submitSingle;
 
-  async function submitPickedUrls(urls: string[]) {
+  async function submitPickedUrls(
+    urls: string[],
+    metaByUrl?: Record<string, JobMeta>,
+  ) {
     setSubmitting(true);
     setSubmitError(null);
     try {
@@ -502,6 +517,7 @@ export default function App() {
         effectiveSubtitles(),
         effectiveOutputDir,
         anyDuplicate ? { force_overwrite: true } : undefined,
+        metaByUrl,
       );
       updateUrl("");
       setAudioOnly(false);
@@ -812,7 +828,7 @@ export default function App() {
         <PreviewPanel
           title={ready.title}
           entries={playlistEntries}
-          onConfirm={(urls) => submitPickedUrls(urls)}
+          onConfirm={(urls, metaByUrl) => submitPickedUrls(urls, metaByUrl)}
           onCancel={() => {
             // The user explicitly dismissed the form. Stale errors from
             // a previous failed submit (single or picker) shouldn't linger

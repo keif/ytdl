@@ -17,6 +17,27 @@ def _validate_http_url(v: str) -> str:
     return v
 
 
+class JobMeta(BaseModel):
+    """Preview-derived metadata for a URL, so the queue row can show the
+    video's image + title instead of a bare URL. All optional — the frontend
+    fills what the preview probe returned; the worker refreshes it on finish.
+    """
+
+    title: str | None = Field(default=None, max_length=1024)
+    uploader: str | None = Field(default=None, max_length=512)
+    duration_s: int | None = Field(default=None, ge=0)
+    thumbnail_url: str | None = Field(default=None, max_length=_MAX_URL_LEN)
+
+    @field_validator("thumbnail_url")
+    @classmethod
+    def thumbnail_must_be_http(cls, v: str | None) -> str | None:
+        # Rendered directly as an <img src> in the browser, so restrict it to
+        # http(s) — reject javascript:/data:/file: schemes as defense-in-depth.
+        if v is None or v == "":
+            return None
+        return _validate_http_url(v)
+
+
 class JobCreate(BaseModel):
     """Create one job from a single URL, or N jobs from a picked subset.
 
@@ -29,6 +50,10 @@ class JobCreate(BaseModel):
     urls: list[str] | None = Field(
         default=None, min_length=1, max_length=_MAX_PICK_URLS
     )
+    # Preview metadata keyed by URL. Applies to whichever URLs are enqueued
+    # (single ``url`` or each of ``urls``); a URL with no entry just gets null
+    # metadata. Optional so CLI / older clients keep working unchanged.
+    metadata: dict[str, JobMeta] | None = Field(default=None, max_length=_MAX_PICK_URLS)
     format_pref: str | None = None
     # None falls back to the server's `subtitles_default` config; an explicit
     # bool overrides it. Lets the UI checkbox show a tri-state default
@@ -84,6 +109,7 @@ class JobOut(BaseModel):
     video_id: str | None
     uploader: str | None
     duration_s: int | None
+    thumbnail_url: str | None
     filesize_bytes: int | None
     bytes_done: int | None
     speed_bps: int | None

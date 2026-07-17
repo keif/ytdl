@@ -30,6 +30,54 @@ def test_post_jobs_accepts_https_url(client: TestClient) -> None:
     assert body["status"] == "pending"
 
 
+def test_post_jobs_persists_and_returns_preview_metadata(client: TestClient) -> None:
+    """The frontend sends the preview metadata (keyed by URL) so the queue row
+    shows the thumbnail + title immediately, not a bare URL. It must round-trip
+    through the job row and JobOut."""
+    url = "https://youtu.be/abc"
+    r = client.post(
+        "/jobs",
+        json={
+            "url": url,
+            "metadata": {
+                url: {
+                    "title": "Never Gonna Give You Up",
+                    "uploader": "Rick Astley",
+                    "duration_s": 213,
+                    "thumbnail_url": "https://i.ytimg.com/vi/abc/hqdefault.jpg",
+                }
+            },
+        },
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["title"] == "Never Gonna Give You Up"
+    assert body["uploader"] == "Rick Astley"
+    assert body["duration_s"] == 213
+    assert body["thumbnail_url"] == "https://i.ytimg.com/vi/abc/hqdefault.jpg"
+
+
+def test_post_jobs_rejects_non_http_thumbnail_url(client: TestClient) -> None:
+    """thumbnail_url is client-supplied and rendered as an <img src>; reject
+    non-http(s) schemes (javascript:, data:) as defense-in-depth."""
+    url = "https://youtu.be/abc"
+    r = client.post(
+        "/jobs",
+        json={
+            "url": url,
+            "metadata": {url: {"thumbnail_url": "javascript:alert(1)"}},
+        },
+    )
+    assert r.status_code == 422
+
+
+def test_post_jobs_without_metadata_still_works(client: TestClient) -> None:
+    r = client.post("/jobs", json={"url": "https://youtu.be/abc"})
+    assert r.status_code == 201
+    assert r.json()["title"] is None
+    assert r.json()["thumbnail_url"] is None
+
+
 def test_post_jobs_rejects_javascript_scheme(client: TestClient) -> None:
     r = client.post("/jobs", json={"url": "javascript:alert(1)"})
     assert r.status_code == 422

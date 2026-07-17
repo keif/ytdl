@@ -93,6 +93,7 @@ def _to_out(job: Job) -> JobOut:
         video_id=job.video_id,
         uploader=job.uploader,
         duration_s=job.duration_s,
+        thumbnail_url=job.thumbnail_url,
         filesize_bytes=job.filesize_bytes,
         bytes_done=job.bytes_done,
         speed_bps=job.speed_bps,
@@ -176,6 +177,22 @@ def post_job(payload: JobCreate, request: Request) -> JobOut:
                         },
                     )
 
+        # Preview metadata keyed by URL — applied to whichever URLs we enqueue
+        # so the queue row shows the video's image + title straight away. A URL
+        # with no entry just gets null metadata (worker fills it post-download).
+        meta_map = payload.metadata or {}
+
+        def _meta_kwargs(u: str) -> dict:
+            m = meta_map.get(u)
+            if m is None:
+                return {}
+            return {
+                "title": m.title,
+                "uploader": m.uploader,
+                "duration_s": m.duration_s,
+                "thumbnail_url": m.thumbnail_url,
+            }
+
         if payload.url is not None:
             job_id = enqueue(
                 conn,
@@ -185,6 +202,7 @@ def post_job(payload: JobCreate, request: Request) -> JobOut:
                 output_dir=out_dir,
                 subtitles=subs,
                 force_overwrite=force_overwrite,
+                **_meta_kwargs(payload.url),
             )
         else:
             # Picked subset from a playlist preview. Each URL becomes its own
@@ -205,6 +223,7 @@ def post_job(payload: JobCreate, request: Request) -> JobOut:
                         output_dir=out_dir,
                         subtitles=subs,
                         force_overwrite=force_overwrite,
+                        **_meta_kwargs(child_url),
                     )
                     if first_id is None:
                         first_id = job_id

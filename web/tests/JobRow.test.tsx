@@ -16,6 +16,7 @@ const baseJob: Job = {
   video_id: "abc",
   uploader: "Channel",
   duration_s: 60,
+  thumbnail_url: null,
   filesize_bytes: 1000,
   bytes_done: 500,
   speed_bps: 100,
@@ -33,6 +34,46 @@ describe("JobRow", () => {
   it("shows the title when present", () => {
     render(<JobRow job={baseJob} onCancel={() => {}} onRetry={() => {}} />);
     expect(screen.getByText("My Video")).toBeInTheDocument();
+  });
+
+  it("renders the thumbnail image and keeps the URL visible", () => {
+    render(
+      <JobRow
+        job={{
+          ...baseJob,
+          thumbnail_url: "https://i.ytimg.com/vi/abc/hqdefault.jpg",
+        }}
+        onCancel={() => {}}
+        onRetry={() => {}}
+      />,
+    );
+    const img = document.querySelector("img");
+    expect(img).not.toBeNull();
+    expect(img).toHaveAttribute(
+      "src",
+      "https://i.ytimg.com/vi/abc/hqdefault.jpg",
+    );
+    // Title is primary; the raw URL stays visible underneath for verification.
+    expect(screen.getByText("My Video")).toBeInTheDocument();
+    expect(screen.getByText("https://youtu.be/abc")).toBeInTheDocument();
+  });
+
+  it("shows uploader and formatted duration", () => {
+    render(<JobRow job={baseJob} onCancel={() => {}} onRetry={() => {}} />);
+    // duration_s: 60 -> "1:00", uploader "Channel"
+    expect(screen.getByText("Channel · 1:00")).toBeInTheDocument();
+  });
+
+  it("falls back to the URL as the primary line when there is no title", () => {
+    render(
+      <JobRow
+        job={{ ...baseJob, title: null }}
+        onCancel={() => {}}
+        onRetry={() => {}}
+      />,
+    );
+    // Only one occurrence of the URL (no duplicate secondary line).
+    expect(screen.getAllByText("https://youtu.be/abc")).toHaveLength(1);
   });
 
   it("renders a progress percentage for running jobs", () => {

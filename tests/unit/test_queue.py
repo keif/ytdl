@@ -47,6 +47,44 @@ def test_enqueue_creates_pending_job_and_event(tmp_path: Path) -> None:
     assert evt["kind"] == "enqueued"
 
 
+def test_enqueue_persists_preview_metadata(tmp_path: Path) -> None:
+    """Metadata captured from the preview (title, uploader, duration,
+    thumbnail) must be stored at enqueue time so pending/running rows show
+    the video instead of a bare URL."""
+    conn = _setup(tmp_path)
+    job_id = enqueue(
+        conn,
+        url="https://youtu.be/abc",
+        kind=JobKind.VIDEO,
+        format_pref="best",
+        output_dir="/out",
+        title="Rick Astley - Never Gonna Give You Up",
+        uploader="Rick Astley",
+        duration_s=213,
+        thumbnail_url="https://i.ytimg.com/vi/abc/hqdefault.jpg",
+    )
+    job = get_job(conn, job_id)
+    assert job is not None
+    assert job.title == "Rick Astley - Never Gonna Give You Up"
+    assert job.uploader == "Rick Astley"
+    assert job.duration_s == 213
+    assert job.thumbnail_url == "https://i.ytimg.com/vi/abc/hqdefault.jpg"
+
+
+def test_enqueue_without_metadata_leaves_fields_null(tmp_path: Path) -> None:
+    """Metadata is optional — CLI enqueues and older clients pass nothing, and
+    those rows must still be created with null metadata (worker fills title
+    post-download)."""
+    conn = _setup(tmp_path)
+    job_id = enqueue(
+        conn, url="u", kind=JobKind.VIDEO, format_pref="best", output_dir="/o"
+    )
+    job = get_job(conn, job_id)
+    assert job is not None
+    assert job.title is None
+    assert job.thumbnail_url is None
+
+
 def test_claim_one_returns_oldest_pending_and_marks_running(tmp_path: Path) -> None:
     conn = _setup(tmp_path)
     a = enqueue(conn, url="a", kind=JobKind.VIDEO, format_pref="best", output_dir="/o")

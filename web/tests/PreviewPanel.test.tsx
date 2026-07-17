@@ -95,7 +95,10 @@ describe("PreviewPanel", () => {
         screen.getByRole("button", { name: /Download 2 selected/ }),
       );
     });
-    expect(seen).toHaveBeenCalledWith(["https://x/a", "https://x/c"]);
+    expect(seen).toHaveBeenCalledWith(
+      ["https://x/a", "https://x/c"],
+      expect.any(Object),
+    );
   });
 
   it("renders enriched details when the enrich endpoint returns them", async () => {
@@ -163,7 +166,10 @@ describe("PreviewPanel", () => {
     await act(async () => {
       confirmBtn.click();
     });
-    expect(onConfirm).toHaveBeenCalledWith(["https://yt/a", "https://yt/b"]);
+    expect(onConfirm).toHaveBeenCalledWith(
+      ["https://yt/a", "https://yt/b"],
+      expect.any(Object),
+    );
   });
 
   it("renders a badge for entries flagged already_downloaded", async () => {

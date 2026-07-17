@@ -197,7 +197,7 @@ When `ytdl serve` is running, the API surface is:
 
 | Method | Path | Body / params | Purpose |
 |---|---|---|---|
-| `POST` | `/jobs` | `{url, format_pref?}` OR `{urls: [...], format_pref?}` | Enqueue a single URL or an array of URLs from a playlist subset. With `urls`, each URL becomes a standalone VIDEO job (no synthetic playlist parent). Returns the new job row. |
+| `POST` | `/jobs` | `{url, format_pref?}` OR `{urls: [...], format_pref?}`; optional `metadata` map keyed by URL (`{title?, uploader?, duration_s?, thumbnail_url?}`) | Enqueue a single URL or an array of URLs from a playlist subset. With `urls`, each URL becomes a standalone VIDEO job (no synthetic playlist parent). `metadata` (from the preview) is persisted so the queue shows the thumbnail + title instead of a bare URL. Returns the new job row. |
 | `GET` | `/jobs` | `?status=&limit=200&offset=0` | List jobs (DESC by `created_at`). |
 | `GET` | `/jobs/{id}` | — | Single job. 404 if unknown. |
 | `DELETE` | `/jobs/{id}` | — | Cancel a job. For a playlist parent, cascades to all children. Returns 204. |

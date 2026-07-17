@@ -11,6 +11,7 @@ from ytdl.db import connect, migrate
 from ytdl.library import extract_video_id_from_url, lookup_by_video_id
 from ytdl.models import Job, JobKind, JobStatus
 from ytdl.queue import (
+    cancel_all_active,
     cancel_with_children,
     children_of,
     clear_done_jobs,
@@ -280,6 +281,35 @@ class ClearResponse(BaseModel):
 class ClearPreviewResponse(BaseModel):
     clearable: int
     older_than_days: int
+
+
+class CancelAllResponse(BaseModel):
+    # Pending jobs flipped straight to canceled.
+    canceled: int
+    # Running jobs asked to stop (they finish canceling asynchronously).
+    canceling: int
+
+
+@router.post("/cancel-all", response_model=CancelAllResponse)
+def cancel_all_endpoint(request: Request) -> CancelAllResponse:
+    """Cancel every in-flight job (pending + running) in one shot.
+
+    Pending jobs go terminal immediately; running jobs are asked to stop and
+    the supervisor is nudged so their download threads abort promptly rather
+    than waiting for the next per-tick DB status check.
+    """
+    conn = _conn(request)
+    try:
+        result = cancel_all_active(conn)
+        sup = getattr(request.app.state, "supervisor", None)
+        if sup is not None:
+            for jid in result["running_ids"]:
+                sup.request_cancel(jid)
+        return CancelAllResponse(
+            canceled=result["canceled"], canceling=result["canceling"]
+        )
+    finally:
+        conn.close()
 
 
 @router.get("/clear/preview", response_model=ClearPreviewResponse)

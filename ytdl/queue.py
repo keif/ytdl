@@ -428,6 +428,94 @@ def cancel_with_children(conn: sqlite3.Connection, job_id: str) -> bool:
         raise
 
 
+def cancel_all_active(conn: sqlite3.Connection) -> dict:
+    """Cancel every in-flight job in one transaction.
+
+    PENDING -> CANCELED (terminal, emits a 'canceled' event each). RUNNING ->
+    CANCELING so the active worker observes the flag and aborts; the caller is
+    responsible for nudging the supervisor's in-memory cancel flags for those
+    ids (returned as ``running_ids``) so the abort is prompt. Already-CANCELING
+    jobs are counted but not re-touched. Terminal jobs (done/failed/canceled)
+    are left alone.
+
+    Returns ``{"canceled": int, "canceling": int, "running_ids": [str, ...]}``.
+    """
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        # Pending -> canceled (terminal). RETURNING gives us the ids so we can
+        # emit a per-job event, matching what single-job cancel does.
+        pending = conn.execute(
+            """
+            UPDATE jobs SET status = ?, finished_at = ?
+            WHERE status = ?
+            RETURNING id
+            """,
+            (JobStatus.CANCELED.value, _now_ms(), JobStatus.PENDING.value),
+        ).fetchall()
+        for row in pending:
+            record_event(conn, row["id"], "canceled", {"reason": "cancel all"})
+
+        # Running -> canceling. The still-stopping set is recomputed below
+        # (after finalizing stuck parents), so no need to capture ids here.
+        conn.execute(
+            "UPDATE jobs SET status = ? WHERE status = ?",
+            (JobStatus.CANCELING.value, JobStatus.RUNNING.value),
+        )
+        # A playlist parent has no worker of its own — a reaper finalizes it
+        # when its last child finishes. But Cancel all terminates all-PENDING
+        # children directly, so no child "finishes" and the parent (now
+        # CANCELING) would hang forever. Finalize any playlist parent whose
+        # children are all terminal. Parents with a still-CANCELING child are
+        # left alone: that child's worker will finish and the normal reaper
+        # takes the parent terminal. Mirrors cancel_with_children's parent
+        # finalization for the single-cancel path.
+        stuck_parents = conn.execute(
+            """
+            SELECT p.id FROM jobs p
+            WHERE p.kind = ? AND p.status = ?
+              AND NOT EXISTS (
+                SELECT 1 FROM jobs c
+                WHERE c.parent_job_id = p.id
+                  AND c.status NOT IN (?, ?, ?)
+              )
+            """,
+            (
+                JobKind.PLAYLIST.value,
+                JobStatus.CANCELING.value,
+                JobStatus.DONE.value,
+                JobStatus.FAILED.value,
+                JobStatus.CANCELED.value,
+            ),
+        ).fetchall()
+        for row in stuck_parents:
+            conn.execute(
+                "UPDATE jobs SET status = ?, finished_at = ? WHERE id = ?",
+                (JobStatus.CANCELED.value, _now_ms(), row["id"]),
+            )
+            record_event(conn, row["id"], "canceled", {"reason": "cancel all"})
+
+        # Every CANCELING job still stopping (after finalizing stuck parents) is
+        # a candidate for a supervisor nudge. Reading inside the txn sees our
+        # own writes.
+        canceling_now = conn.execute(
+            "SELECT id FROM jobs WHERE status = ?",
+            (JobStatus.CANCELING.value,),
+        ).fetchall()
+
+        conn.execute("COMMIT")
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+
+    running_ids = [row["id"] for row in canceling_now]
+    return {
+        # Pending jobs plus any playlist parents we finalized went terminal now.
+        "canceled": len(pending) + len(stuck_parents),
+        "canceling": len(canceling_now),
+        "running_ids": running_ids,
+    }
+
+
 def revive_orphans(conn: sqlite3.Connection, *, max_attempts: int = 3) -> int:
     """Reset orphans after a crash.
 

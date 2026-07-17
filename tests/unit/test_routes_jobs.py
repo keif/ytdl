@@ -78,6 +78,24 @@ def test_post_jobs_without_metadata_still_works(client: TestClient) -> None:
     assert r.json()["thumbnail_url"] is None
 
 
+def test_cancel_all_cancels_every_pending_job(client: TestClient) -> None:
+    """POST /jobs/cancel-all flips all in-flight jobs. With workers=0 the jobs
+    stay pending, so all of them go straight to canceled."""
+    for u in ["https://a.com/1", "https://a.com/2", "https://a.com/3"]:
+        client.post("/jobs", json={"url": u})
+    r = client.post("/jobs/cancel-all")
+    assert r.status_code == 200, r.text
+    assert r.json()["canceled"] == 3
+    jobs = client.get("/jobs").json()["jobs"]
+    assert all(j["status"] == "canceled" for j in jobs)
+
+
+def test_cancel_all_on_empty_queue_is_ok(client: TestClient) -> None:
+    r = client.post("/jobs/cancel-all")
+    assert r.status_code == 200
+    assert r.json() == {"canceled": 0, "canceling": 0}
+
+
 def test_post_jobs_rejects_javascript_scheme(client: TestClient) -> None:
     r = client.post("/jobs", json={"url": "javascript:alert(1)"})
     assert r.status_code == 422

@@ -152,6 +152,18 @@ export async function createJobsFromPick(
   return r.json();
 }
 
+export interface CancelAllResult {
+  canceled: number;
+  canceling: number;
+}
+
+/** Cancel every in-flight job (pending + running) in one request. */
+export async function cancelAllJobs(): Promise<CancelAllResult> {
+  const r = await fetch("/jobs/cancel-all", { method: "POST" });
+  if (!r.ok) throw new Error(`cancelAllJobs: ${r.status}`);
+  return r.json();
+}
+
 export async function cancelJob(id: string): Promise<void> {
   const r = await fetch(`/jobs/${id}`, { method: "DELETE" });
   if (!r.ok) throw new Error(`cancelJob: ${r.status}`);

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   cancelJob,
+  cancelAllJobs,
   clearDoneJobs,
   createJob,
   createJobsFromPick,
@@ -846,21 +847,52 @@ export default function App() {
 
       {submitError && <p className="text-xs text-red-400">{submitError}</p>}
 
-      {clearable > 0 && (
-        <div className="flex justify-end">
-          <button
-            type="button"
-            className="text-xs text-neutral-400 hover:text-neutral-200 border border-neutral-800 rounded px-2 py-1"
-            onClick={async () => {
-              if (!window.confirm(`Delete ${clearable} done jobs older than 7 days?`)) return;
-              await clearDoneJobs();
-              await refreshAll();
-            }}
-          >
-            Clear {clearable} done job{clearable > 1 ? "s" : ""}
-          </button>
-        </div>
-      )}
+      {(() => {
+        // In-flight = anything not yet terminal. "Cancel all" targets these so
+        // a long wall of opaque pending jobs can be cleared in one click.
+        const activeCount = jobs.filter(
+          (j) =>
+            j.status === "pending"
+            || j.status === "running"
+            || j.status === "canceling",
+        ).length;
+        if (activeCount === 0 && clearable === 0) return null;
+        return (
+          <div className="flex justify-end gap-2">
+            {activeCount > 0 && (
+              <button
+                type="button"
+                className="text-xs text-amber-400 hover:text-amber-300 border border-neutral-800 rounded px-2 py-1"
+                onClick={async () => {
+                  if (
+                    !window.confirm(
+                      `Cancel all ${activeCount} in-flight job${activeCount > 1 ? "s" : ""}?`,
+                    )
+                  )
+                    return;
+                  await cancelAllJobs();
+                  await refreshAll();
+                }}
+              >
+                Cancel all {activeCount}
+              </button>
+            )}
+            {clearable > 0 && (
+              <button
+                type="button"
+                className="text-xs text-neutral-400 hover:text-neutral-200 border border-neutral-800 rounded px-2 py-1"
+                onClick={async () => {
+                  if (!window.confirm(`Delete ${clearable} done jobs older than 7 days?`)) return;
+                  await clearDoneJobs();
+                  await refreshAll();
+                }}
+              >
+                Clear {clearable} done job{clearable > 1 ? "s" : ""}
+              </button>
+            )}
+          </div>
+        );
+      })()}
 
       <JobList
         jobs={jobs}

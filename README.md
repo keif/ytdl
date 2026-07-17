@@ -201,6 +201,7 @@ When `ytdl serve` is running, the API surface is:
 | `GET` | `/jobs` | `?status=&limit=200&offset=0` | List jobs (DESC by `created_at`). |
 | `GET` | `/jobs/{id}` | — | Single job. 404 if unknown. |
 | `DELETE` | `/jobs/{id}` | — | Cancel a job. For a playlist parent, cascades to all children. Returns 204. |
+| `POST` | `/jobs/cancel-all` | — | Cancel every in-flight job at once — pending go straight to canceled, running are asked to stop. Returns `{canceled, canceling}`. |
 | `POST` | `/jobs/{id}/retry` | — | Create a new PENDING job from a failed/canceled/done one. 400 if not in a retryable state. |
 | `GET` | `/jobs/clear/preview` | `?older_than_days=7` | Count of DONE jobs that would be deleted. |
 | `POST` | `/jobs/clear` | `?older_than_days=7` | Delete DONE jobs older than the threshold. Failed/canceled stay; children of retained parents stay. Returns `{deleted}`. |

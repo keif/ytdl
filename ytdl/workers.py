@@ -590,6 +590,7 @@ class Supervisor:
                     video_id=result.video_id,
                     uploader=result.uploader,
                     duration_s=result.duration_s,
+                    thumbnail_url=result.thumbnail_url,
                 )
                 # On success, ensure bytes_done reflects the full file. The
                 # throttled progress hook may have only captured a partial

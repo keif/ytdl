@@ -15,6 +15,7 @@ import {
   type EnrichedEntry,
   type Job,
   type JobMeta,
+  type JobStatus,
   type PreviewResponse,
   type StatusResponse,
 } from "./api";
@@ -41,8 +42,16 @@ type PreviewState =
   | { kind: "ready"; preview: PreviewResponse; sourceUrl: string }
   | { kind: "error"; sourceUrl: string; message: string };
 
+type StatusFilter = "all" | JobStatus;
+
 export default function App() {
   const [jobs, setJobs] = useState<Job[]>([]);
+  // Queue status filter. "all" fetches everything (newest-N); a specific
+  // status fetches just those rows so completed downloads stay findable even
+  // when thousands of canceled jobs sit on top of them. A ref mirrors it so
+  // the SSE callback's refresh() (created once) always reads the live value.
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const statusFilterRef = useRef<StatusFilter>("all");
   const [url, setUrl] = useState("");
   const [format, setFormat] = useState("best");
   // Tri-state at the server (None/true/false), but a checkbox can only be
@@ -111,7 +120,8 @@ export default function App() {
     refreshSeq.current = seq;
     let list: { jobs: Job[]; total: number };
     try {
-      list = await listJobs();
+      const f = statusFilterRef.current;
+      list = await listJobs(f === "all" ? undefined : f);
     } catch (e) {
       // Roll back our claim on the seq so an earlier successful refresh
       // that's still in flight can still write — its response is the
@@ -175,6 +185,14 @@ export default function App() {
         .then((r) => setClearable(r.clearable))
         .catch(() => setClearable(0)),
     ]);
+  }
+
+  // Switch the queue filter. Update the ref synchronously (so the in-flight
+  // refresh reads the new value) then re-fetch that subset.
+  function changeFilter(f: StatusFilter) {
+    statusFilterRef.current = f;
+    setStatusFilter(f);
+    refresh().catch(() => {});
   }
 
   /**
@@ -856,10 +874,15 @@ export default function App() {
             || j.status === "running"
             || j.status === "canceling",
         ).length;
-        if (activeCount === 0 && clearable === 0) return null;
+        // cancelAllJobs() is GLOBAL (cancels every in-flight job, not just the
+        // visible ones). Only offer it on the "all" view, where activeCount
+        // reflects the full picture — on a filtered tab the count is a subset
+        // and would understate the blast radius of a destructive action.
+        const showCancelAll = statusFilter === "all" && activeCount > 0;
+        if (!showCancelAll && clearable === 0) return null;
         return (
           <div className="flex justify-end gap-2">
-            {activeCount > 0 && (
+            {showCancelAll && (
               <button
                 type="button"
                 className="text-xs text-amber-400 hover:text-amber-300 border border-neutral-800 rounded px-2 py-1"
@@ -893,6 +916,33 @@ export default function App() {
           </div>
         );
       })()}
+
+      <div className="flex gap-1 flex-wrap text-xs">
+        {(
+          [
+            ["all", "All"],
+            ["running", "Downloading"],
+            ["pending", "Queued"],
+            ["done", "Done"],
+            ["failed", "Failed"],
+            ["canceled", "Canceled"],
+          ] as [StatusFilter, string][]
+        ).map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            onClick={() => changeFilter(value)}
+            className={
+              "rounded px-2 py-1 border "
+              + (statusFilter === value
+                ? "border-emerald-600 text-emerald-300 bg-emerald-950/40"
+                : "border-neutral-800 text-neutral-400 hover:text-neutral-200")
+            }
+          >
+            {label}
+          </button>
+        ))}
+      </div>
 
       <JobList
         jobs={jobs}

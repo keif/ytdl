@@ -169,7 +169,11 @@ describe("App granular SSE updates", () => {
     });
 
     await waitFor(() => expect(screen.getByText("50%")).toBeInTheDocument());
-    expect(screen.queryByText(/DOWNLOADING/i)).not.toBeInTheDocument();
+    // The job status chip must not have been overwritten with the raw yt-dlp
+    // "downloading" status. That would render as lowercase "downloading" in
+    // the DOM (the chip only uppercases via CSS); exact-case match so the
+    // "Downloading" filter tab (capital D) doesn't false-positive here.
+    expect(screen.queryByText("downloading")).not.toBeInTheDocument();
   });
 
   it("triggers a full /jobs refresh on lifecycle events", async () => {

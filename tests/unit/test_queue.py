@@ -20,6 +20,7 @@ from ytdl.queue import (
     promote_to_playlist,
     record_event,
     revive_orphans,
+    update_metadata,
     update_progress,
 )
 
@@ -163,6 +164,34 @@ def test_finish_failure_records_error(tmp_path: Path) -> None:
     row = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
     assert row["status"] == JobStatus.FAILED
     assert row["error"] == "age-restricted"
+
+
+def test_update_metadata_sets_thumbnail(tmp_path: Path) -> None:
+    """Post-download metadata refresh must persist the thumbnail so worker-
+    promoted playlist children (which have no thumbnail at enqueue) show an
+    image once they finish."""
+    conn = _setup(tmp_path)
+    job_id = enqueue(conn, url="u", kind=JobKind.VIDEO, format_pref="best", output_dir="/o")
+    update_metadata(
+        conn, job_id, title="T", thumbnail_url="https://i.ytimg.com/vi/x/hq.jpg"
+    )
+    job = get_job(conn, job_id)
+    assert job is not None
+    assert job.thumbnail_url == "https://i.ytimg.com/vi/x/hq.jpg"
+
+
+def test_update_metadata_null_thumbnail_preserves_seeded(tmp_path: Path) -> None:
+    """A null thumbnail from the download must not wipe a thumbnail seeded at
+    enqueue (single-video / picker paths) — COALESCE keeps the existing one."""
+    conn = _setup(tmp_path)
+    job_id = enqueue(
+        conn, url="u", kind=JobKind.VIDEO, format_pref="best",
+        output_dir="/o", thumbnail_url="https://seed/t.jpg",
+    )
+    update_metadata(conn, job_id, title="T", thumbnail_url=None)
+    job = get_job(conn, job_id)
+    assert job is not None
+    assert job.thumbnail_url == "https://seed/t.jpg"
 
 
 def test_cancel_pending_goes_straight_to_canceled(tmp_path: Path) -> None:

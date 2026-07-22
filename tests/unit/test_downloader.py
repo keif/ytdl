@@ -111,7 +111,8 @@ def test_classify_not_a_bot_as_forbidden() -> None:
     error. The real message ships a curly apostrophe, so the pattern keys off
     'not a bot' rather than the quote."""
     msg = (
-        "Sign in to confirm you’re not a bot. Use --cookies-from-browser "
+        # Curly apostrophe is deliberate — it mirrors YouTube's real message.
+        "Sign in to confirm you’re not a bot. Use --cookies-from-browser "  # noqa: RUF001
         "or --cookies for the authentication."
     )
     assert classify_error(_err(msg)) == Classification.FORBIDDEN
@@ -210,6 +211,31 @@ def test_download_calls_yt_dlp_with_built_options(tmp_path: Path) -> None:
     assert opts["cookiesfrombrowser"] == ("chrome",)
     assert opts["restrictfilenames"] is True
     assert "progress_hooks" in opts
+
+
+def test_download_captures_thumbnail_from_info(tmp_path: Path) -> None:
+    """The download must capture yt-dlp's thumbnail URL so the queue row shows
+    the video's image even for jobs that never went through a preview (worker-
+    promoted playlist children) — those otherwise have no thumbnail at all."""
+    fake_ydl = MagicMock()
+    fake_ydl_cls = MagicMock(return_value=fake_ydl)
+    fake_ydl.__enter__ = MagicMock(return_value=fake_ydl)
+    fake_ydl.__exit__ = MagicMock(return_value=False)
+    fake_ydl.extract_info.return_value = {
+        "id": "abc",
+        "title": "Test Video",
+        "thumbnail": "https://i.ytimg.com/vi/abc/hqdefault.jpg",
+        "requested_downloads": [{"filepath": str(tmp_path / "Test Video [abc].mp4")}],
+    }
+    job = _make_job(tmp_path)
+    ctx = DownloadContext(
+        ydl_cls=fake_ydl_cls,
+        cookies_browser=None,
+        on_progress=lambda d: None,
+        cancel_flag=lambda: False,
+    )
+    result = download(job, ctx)
+    assert result.thumbnail_url == "https://i.ytimg.com/vi/abc/hqdefault.jpg"
 
 
 def test_download_progress_hook_fires_through_throttle(tmp_path: Path) -> None:

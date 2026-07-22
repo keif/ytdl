@@ -200,6 +200,10 @@ class DownloadResult:
     uploader: str | None
     duration_s: int | None
     filesize_bytes: int | None
+    # yt-dlp's chosen thumbnail URL. Captured here so the queue row shows the
+    # video's image for jobs that never had a preview (worker-promoted playlist
+    # children), which are otherwise thumbnail-less.
+    thumbnail_url: str | None = None
 
 
 def _pot_extractor_args(pot_provider_url: str | None) -> dict:
@@ -474,4 +478,5 @@ def download(job, ctx: DownloadContext) -> DownloadResult:
         uploader=info.get("uploader"),
         duration_s=int(info["duration"]) if info.get("duration") else None,
         filesize_bytes=info.get("filesize") or info.get("filesize_approx"),
+        thumbnail_url=info.get("thumbnail"),
     )

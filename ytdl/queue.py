@@ -194,6 +194,7 @@ def update_metadata(
     video_id: str | None = None,
     uploader: str | None = None,
     duration_s: int | None = None,
+    thumbnail_url: str | None = None,
 ) -> None:
     conn.execute(
         """
@@ -201,10 +202,11 @@ def update_metadata(
             title    = COALESCE(?, title),
             video_id = COALESCE(?, video_id),
             uploader = COALESCE(?, uploader),
-            duration_s = COALESCE(?, duration_s)
+            duration_s = COALESCE(?, duration_s),
+            thumbnail_url = COALESCE(?, thumbnail_url)
         WHERE id = ?
         """,
-        (title, video_id, uploader, duration_s, job_id),
+        (title, video_id, uploader, duration_s, thumbnail_url, job_id),
     )
 
 

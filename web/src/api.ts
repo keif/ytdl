@@ -38,8 +38,15 @@ export interface JobList {
   total: number;
 }
 
-export async function listJobs(): Promise<JobList> {
-  const r = await fetch("/jobs");
+// Higher than the API's 200 default so a busy queue (thousands of rows after a
+// big playlist) still surfaces all of a given status — otherwise completed
+// jobs fall off the newest-N window when canceled rows pile up on top.
+const JOBS_LIMIT = 1000;
+
+export async function listJobs(status?: JobStatus): Promise<JobList> {
+  const params = new URLSearchParams({ limit: String(JOBS_LIMIT) });
+  if (status) params.set("status", status);
+  const r = await fetch(`/jobs?${params.toString()}`);
   if (!r.ok) throw new Error(`listJobs: ${r.status}`);
   return r.json();
 }

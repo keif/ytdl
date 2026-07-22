@@ -120,4 +120,24 @@ describe("App cancel-all", () => {
     );
     expect(confirmSpy).toHaveBeenCalled();
   });
+
+  it("hides global Cancel all on a filtered tab (blast radius would mislead)", async () => {
+    render(<App />);
+    // Present on the default "All" view.
+    await screen.findByRole("button", { name: /Cancel all/ });
+    // Switch to a filtered tab. cancelAllJobs() is global, so its
+    // filtered-subset count would understate what gets canceled — the button
+    // must not be offered here.
+    const downloadingTab = await screen.findByRole("button", {
+      name: "Downloading",
+    });
+    await act(async () => {
+      downloadingTab.click();
+    });
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: /Cancel all/ }),
+      ).not.toBeInTheDocument(),
+    );
+  });
 });

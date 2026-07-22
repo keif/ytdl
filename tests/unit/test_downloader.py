@@ -111,7 +111,8 @@ def test_classify_not_a_bot_as_forbidden() -> None:
     error. The real message ships a curly apostrophe, so the pattern keys off
     'not a bot' rather than the quote."""
     msg = (
-        "Sign in to confirm you’re not a bot. Use --cookies-from-browser "
+        # Curly apostrophe is deliberate — it mirrors YouTube's real message.
+        "Sign in to confirm you’re not a bot. Use --cookies-from-browser "  # noqa: RUF001
         "or --cookies for the authentication."
     )
     assert classify_error(_err(msg)) == Classification.FORBIDDEN

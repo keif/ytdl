@@ -8,7 +8,7 @@
 ARG DENO_VERSION=2.4.0
 FROM denoland/deno:bin-${DENO_VERSION} AS deno
 
-FROM node:22-alpine AS web-build
+FROM node:25-alpine AS web-build
 WORKDIR /web
 COPY web/package.json web/pnpm-lock.yaml* ./
 # node:26-alpine dropped corepack from the default install, so install

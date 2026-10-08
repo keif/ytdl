@@ -15,7 +15,7 @@ dependencies = [
   # YouTube's anti-bot gate can be cleared where cookies alone return
   # LOGIN_REQUIRED. Keep the major/minor aligned with the sidecar image tag
   # in docker/docker-compose.yml.
-  "bgutil-ytdlp-pot-provider>=1.3.1,<2",
+  "bgutil-ytdlp-pot-provider>=2.0.1,<3",
   "typer>=0.27.0",
   "httpx>=0.28.1",
   "rich>=15.0.0",
